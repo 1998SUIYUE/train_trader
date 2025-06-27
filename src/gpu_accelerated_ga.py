@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from tqdm import tqdm
+import torch.jit
 
 
 from gpu_utils import WindowsGPUManager, get_windows_gpu_manager
@@ -46,6 +47,98 @@ class WindowsGAConfig:
     batch_size: int = 500
     use_mixed_precision: bool = False  # DirectML混合精度支持有限
     memory_efficient: bool = True
+
+
+@torch.jit.script
+def _calculate_fitness_metrics_jit(sum_returns: torch.Tensor, sum_sq_returns: torch.Tensor,
+                                   downside_sum_sq_returns: torch.Tensor,
+                                   trade_counts: torch.Tensor, n_samples: int,
+                                   equity: torch.Tensor, peak_equity: torch.Tensor,
+                                   sharpe_weight: float, drawdown_weight: float,
+                                   stability_weight: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    JIT编译的适应度指标计算
+    """
+    # 夏普比率
+    mean_returns = sum_returns / n_samples
+    variance = torch.clamp(sum_sq_returns / n_samples - mean_returns.pow(2), min=0)
+    std_returns = torch.sqrt(variance)
+    sharpe_ratios = mean_returns / (std_returns + 1e-9) * torch.sqrt(torch.tensor(252.0, device=sum_returns.device))
+
+    # 最大回撤
+    max_drawdowns = (peak_equity - equity) / peak_equity
+
+    # 交易频率稳定性
+    stability_scores = 1.0 / (1.0 + trade_counts / n_samples)
+
+    # 索提诺比率
+    downside_variance = torch.clamp(downside_sum_sq_returns / n_samples, min=0)
+    downside_std = torch.sqrt(downside_variance)
+    sortino_ratios = mean_returns / (downside_std + 1e-9) * torch.sqrt(torch.tensor(252.0, device=sum_returns.device))
+
+    # 综合适应度函数
+    fitness = (sharpe_weight * sharpe_ratios -
+               drawdown_weight * max_drawdowns +
+               stability_weight * stability_scores)
+
+    # 替换NaN
+    fitness = torch.nan_to_num(fitness, nan=-1e9)
+    sharpe_ratios = torch.nan_to_num(sharpe_ratios, nan=0.0)
+    sortino_ratios = torch.nan_to_num(sortino_ratios, nan=0.0)
+
+    return fitness, sharpe_ratios, sortino_ratios, max_drawdowns, equity
+
+@torch.jit.script
+def _step_function_jit(carry: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+                       x: torch.Tensor,
+                       max_drawdown: float,
+                       stop_loss: float,
+                       max_position: float) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None]:
+    """
+    JIT编译的回测步进函数
+    """
+    # 解包状态
+    positions, equity, peak_equity, sum_returns, sum_sq_returns, downside_sum_sq_returns, trade_counts = carry
+    
+    # 解包当前时间步输入
+    buy_signal_t, sell_signal_t, price_change_t = x[..., 0], x[..., 1], x[..., 2]
+
+    # --- 核心回测逻辑 ---
+    period_return = positions * price_change_t
+    equity += period_return
+
+    sum_returns += period_return
+    sum_sq_returns += period_return.pow(2)
+    downside_sum_sq_returns += torch.where(period_return < 0, period_return.pow(2), torch.zeros_like(period_return))
+
+    peak_equity = torch.maximum(peak_equity, equity)
+    current_drawdown = (peak_equity - equity) / peak_equity
+    
+    force_close = current_drawdown > max_drawdown
+    positions = torch.where(force_close, torch.zeros_like(positions), positions)
+    
+    stop_loss_trigger = (positions > 0) & (price_change_t < -stop_loss)
+    positions = torch.where(stop_loss_trigger, torch.zeros_like(positions), positions)
+    
+    can_buy = (positions == 0) & (buy_signal_t > 0.5) & (~force_close)
+    new_position = torch.where(can_buy, torch.full_like(positions, max_position), positions)
+    
+    can_sell = (positions > 0) & (sell_signal_t > 0.5)
+    new_position = torch.where(can_sell, torch.zeros_like(positions), new_position)
+    
+    trade_counts += (new_position != positions).float()
+    positions = new_position
+
+    # --- 返回更新后的状态 ---
+    return (
+        positions,
+        equity,
+        peak_equity,
+        sum_returns,
+        sum_sq_returns,
+        downside_sum_sq_returns,
+        trade_counts
+    ), None
 
 
 class WindowsGPUAcceleratedGA:
@@ -135,7 +228,7 @@ class WindowsGPUAcceleratedGA:
         print("使用纯特征权重模式 - 所有交易决策都基于1400个特征权重")
         return population
     
-    def batch_fitness_evaluation(self, features: torch.Tensor, prices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def batch_fitness_evaluation(self, features: torch.Tensor, prices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         批量适应度评估 (Windows GPU加速)
         
@@ -144,7 +237,7 @@ class WindowsGPUAcceleratedGA:
             prices: 价格序列 (n_samples,)
             
         Returns:
-            一个元组，包含 (适应度分数, 夏普比率, 索提诺比率)
+            一个元组，包含 (适应度分数, 夏普比率, 索提诺比率, 最大回撤, 最终净值)
         """
         start_time = time.time()
         
@@ -155,27 +248,24 @@ class WindowsGPUAcceleratedGA:
             prices = prices.to(self.device)
         
         # 现在只有特征权重，所有决策都基于这1400个权重
-        weights = self.population  # (pop_size, 1400) - 整个基因就是权重
+        weights = self.population
         
         # 批量计算决策分数 (GPU矩阵乘法)
-        # raw_scores: (pop_size, n_samples) - 原始分数
         raw_scores = torch.mm(weights, features.T)
         
-        # 🎯 使用Sigmoid激活函数将分数映射到[0,1]区间
+        # 使用Sigmoid激活函数将分数映射到[0,1]区间
         scores = torch.sigmoid(raw_scores)
-        print("scores",scores)
 
-        # 从配置中获取交易策略参数 (现在阈值应该在[0,1]区间)
-        buy_threshold = getattr(self.config, 'buy_threshold', 0.6)   # 默认0.6 (大于0.5表示偏向买入)
-        sell_threshold = getattr(self.config, 'sell_threshold', 0.4) # 默认0.4 (小于0.5表示偏向卖出)
+        # 从配置中获取交易策略参数
+        buy_threshold = getattr(self.config, 'buy_threshold', 0.6)
+        sell_threshold = getattr(self.config, 'sell_threshold', 0.4)
         
-        # 向量化交易信号生成 (基于[0,1]区间的scores)
-        buy_signals = scores > buy_threshold    # scores > 0.6 表示强烈买入信号
-        sell_signals = scores < sell_threshold  # scores < 0.4 表示强烈卖出信号
-        # 注意：0.4 < scores < 0.6 为中性区间，不产生交易信号
+        # 向量化交易信号生成
+        buy_signals = scores > buy_threshold
+        sell_signals = scores < sell_threshold
         
-        # 📈 交易信号统计
-        total_signals = scores.numel()  # 总信号数 = 种群大小 × 时间步数
+        # 交易信号统计
+        total_signals = scores.numel()
         buy_count = torch.sum(buy_signals).item()
         sell_count = torch.sum(sell_signals).item()
         neutral_count = total_signals - buy_count - sell_count
@@ -194,161 +284,55 @@ class WindowsGPUAcceleratedGA:
         max_position = getattr(self.config, 'max_position', 1.0)
         max_drawdown = getattr(self.config, 'max_drawdown', 0.2)
         
-        # 批量回测计算 (Windows优化版本)
-        fitness_scores_tuple = self._vectorized_backtest_windows(
-            buy_signals, sell_signals, prices, 
-            stop_loss, max_position, max_drawdown, self.generation
+        # --- JIT回测逻辑 ---
+        pop_size, n_samples = buy_signals.shape
+        device = self.device
+
+        price_changes = (prices[1:] - prices[:-1]) / prices[:-1]
+        price_changes = torch.cat([torch.zeros(1, device=device), price_changes])
+
+        expanded_price_changes = price_changes.unsqueeze(0).expand(pop_size, -1)
+        xs = torch.stack([
+            buy_signals.float(),
+            sell_signals.float(),
+            expanded_price_changes
+        ], dim=2).permute(1, 0, 2)
+
+        init_carry = (
+            torch.zeros(pop_size, device=device),
+            torch.ones(pop_size, device=device),
+            torch.ones(pop_size, device=device),
+            torch.zeros(pop_size, device=device),
+            torch.zeros(pop_size, device=device),
+            torch.zeros(pop_size, device=device),
+            torch.zeros(pop_size, device=device)
+        )
+
+        carry = init_carry
+        # 为每个世代的回测添加内部进度条
+        with tqdm(total=n_samples, desc=f"  第 {self.generation} 代回测", unit="步", leave=False) as pbar:
+            for i in range(n_samples):
+                carry, _ = _step_function_jit(
+                    carry, xs[i], max_drawdown, stop_loss, max_position
+                )
+                pbar.update(1)
+        
+        (_, final_equity, final_peak_equity, final_sum_returns,
+         final_sum_sq_returns, final_downside_sum_sq_returns, final_trade_counts) = carry
+
+        fitness_scores_tuple = _calculate_fitness_metrics_jit(
+            final_sum_returns, final_sum_sq_returns, final_downside_sum_sq_returns,
+            final_trade_counts, n_samples, final_equity, final_peak_equity,
+            self.config.sharpe_weight, self.config.drawdown_weight, self.config.stability_weight
         )
         
-        self.fitness_scores = fitness_scores_tuple[0]
+        # 解包返回的元组
+        fitness_scores, sharpe_ratios, sortino_ratios, max_drawdowns, final_equity = fitness_scores_tuple
+        
+        self.fitness_scores = fitness_scores
         self.stats['fitness_times'].append(time.time() - start_time)
         
-        return fitness_scores_tuple
-    
-    def _vectorized_backtest_windows(self, buy_signals: torch.Tensor, sell_signals: torch.Tensor, 
-                                   prices: torch.Tensor, stop_loss: float,
-                                   max_position: float, max_drawdown: float, generation: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Windows优化的向量化回测计算 (纯特征权重版本)
-        
-        Args:
-            buy_signals: 买入信号 (pop_size, n_samples)
-            sell_signals: 卖出信号 (pop_size, n_samples)
-            prices: 价格序列 (n_samples,)
-            stop_loss: 固定止损比例 (标量)
-            max_position: 固定最大仓位 (标量)
-            max_drawdown: 固定最大回撤 (标量)
-            
-        Returns:
-            一个元组，包含 (适应度分数, 夏普比率, 索提诺比率)
-        """
-        pop_size, n_samples = buy_signals.shape
-        
-        # 初始化状态
-        positions = torch.zeros(pop_size, device=self.device)
-        equity = torch.ones(pop_size, device=self.device)
-        peak_equity = torch.ones(pop_size, device=self.device)
-        
-        # 内存优化：不保存完整的收益序列，而是计算统计数据
-        sum_returns = torch.zeros(pop_size, device=self.device)
-        sum_sq_returns = torch.zeros(pop_size, device=self.device)
-        downside_sum_sq_returns = torch.zeros(pop_size, device=self.device) # 用于索提诺比率
-        trade_counts = torch.zeros(pop_size, device=self.device)
-
-        # 预计算价格变化率
-        price_changes = (prices[1:] - prices[:-1]) / prices[:-1]
-        price_changes = torch.cat([torch.zeros(1, device=self.device), price_changes]) # 补全第一个为0
-
-        # Windows优化：分块处理以减少内存使用
-        chunk_size = min(1000, n_samples)
-        
-        # 为回测数据块添加内层tqdm进度条
-        backtest_progress = tqdm(range(1, n_samples, chunk_size), desc=f"第 {generation} 代 回测", leave=True)
-
-        for chunk_start in backtest_progress:
-            chunk_end = min(chunk_start + chunk_size, n_samples)
-            
-            for t in range(chunk_start, chunk_end):
-                price_change = price_changes[t]
-                
-                # 计算当前收益
-                period_return = positions * price_change
-                equity += period_return
-                
-                # 更新统计数据
-                sum_returns += period_return
-                sum_sq_returns += period_return.pow(2)
-                downside_sum_sq_returns += torch.where(period_return < 0, period_return.pow(2), torch.zeros_like(period_return))
-
-                # 更新历史最高净值
-                peak_equity = torch.maximum(peak_equity, equity)
-                
-                # 计算当前回撤
-                current_drawdown = (peak_equity - equity) / peak_equity
-                
-                # 风险控制：强制平仓
-                force_close = current_drawdown > max_drawdown
-                positions = torch.where(force_close, torch.zeros_like(positions), positions)
-                
-                # 止损检查
-                stop_loss_trigger = (positions > 0) & (price_change < -stop_loss)
-                positions = torch.where(stop_loss_trigger, torch.zeros_like(positions), positions)
-                
-                # 交易信号处理
-                can_buy = (positions == 0) & buy_signals[:, t] & (~force_close)
-                new_position = torch.where(can_buy, torch.full_like(positions, max_position), positions)
-                
-                can_sell = (positions > 0) & sell_signals[:, t]
-                new_position = torch.where(can_sell, torch.zeros_like(positions), new_position)
-                
-                # 统计交易次数
-                trade_counts += (new_position != positions).float()
-                
-                positions = new_position
-            
-            if chunk_start % (chunk_size * 5) == 0:
-                self.gpu_manager.clear_cache()
-        
-        # 计算适应度指标
-        fitness_metrics = self._calculate_fitness_metrics_windows(
-            sum_returns, sum_sq_returns, downside_sum_sq_returns, trade_counts, n_samples, equity, peak_equity
-        )
-        
-        return fitness_metrics
-    
-    def _calculate_fitness_metrics_windows(self, sum_returns: torch.Tensor, sum_sq_returns: torch.Tensor, 
-                                         downside_sum_sq_returns: torch.Tensor, 
-                                         trade_counts: torch.Tensor, n_samples: int, 
-                                         equity: torch.Tensor, peak_equity: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Windows优化的适应度指标计算 (内存优化版)
-
-        Args:
-            sum_returns: 总收益
-            sum_sq_returns: 收益平方和
-            trade_counts: 交易次数
-            n_samples: 样本总数
-            equity: 最终净值
-            peak_equity: 历史最高净值
-
-        Returns:
-            一个元组，包含 (综合适应度分数, 夏普比率, 索提诺比率)
-        """
-        # 计算夏普率
-        mean_returns = sum_returns / n_samples
-        variance = sum_sq_returns / n_samples - mean_returns.pow(2)
-        variance = torch.clamp(variance, min=0)
-        std_returns = torch.sqrt(variance)
-        sharpe_ratios = mean_returns / (std_returns + 1e-9) * np.sqrt(252)
-
-        # 计算最大回撤
-        max_drawdowns = (peak_equity - equity) / peak_equity
-
-        # 计算交易频率稳定性
-        stability_scores = 1.0 / (1.0 + trade_counts / n_samples)
-
-        # 计算索提诺比率
-        downside_variance = downside_sum_sq_returns / n_samples
-        downside_variance = torch.clamp(downside_variance, min=0)
-        downside_std = torch.sqrt(downside_variance)
-        sortino_ratios = mean_returns / (downside_std + 1e-9) * np.sqrt(252)
-
-        # 从配置中获取适应度权重
-        sharpe_weight = getattr(self.config, 'sharpe_weight', 0.5)
-        drawdown_weight = getattr(self.config, 'drawdown_weight', 0.3)
-        stability_weight = getattr(self.config, 'stability_weight', 0.2)
-        
-        # 综合适应度函数
-        fitness = (sharpe_weight * sharpe_ratios -
-                   drawdown_weight * max_drawdowns +
-                   stability_weight * stability_scores)
-
-        # 使用 torch.nan_to_num 替换所有 NaN
-        fitness = torch.nan_to_num(fitness, nan=-1e9) # 将NaN替换为一个非常小的值
-        sharpe_ratios = torch.nan_to_num(sharpe_ratios, nan=0.0)
-        sortino_ratios = torch.nan_to_num(sortino_ratios, nan=0.0)
-
-        return fitness, sharpe_ratios, sortino_ratios
+        return fitness_scores, sharpe_ratios, sortino_ratios, max_drawdowns, final_equity
     
     def tournament_selection(self, tournament_size: Optional[int] = None) -> torch.Tensor:
         """
@@ -402,14 +386,8 @@ class WindowsGPUAcceleratedGA:
         if elite_count == 0 and pop_size > 0:
             elite_count = 1
         
-
-        
-        # 交叉操作 (Windows优化：分批处理)
-
         elite_indices = torch.topk(self.fitness_scores, elite_count).indices
         new_population[:elite_count] = self.population[elite_indices]
-        
-        # 交叉操作 (Windows优化：分批处理)""
         
         # 交叉操作 (Windows优化：分批处理)
         batch_size = self.config.batch_size
@@ -471,7 +449,7 @@ class WindowsGPUAcceleratedGA:
         gen_start_time = time.time()
         
         # 适应度评估
-        fitness_scores, sharpe_ratios, sortino_ratios = self.batch_fitness_evaluation(features, prices)
+        fitness_scores, sharpe_ratios, sortino_ratios, max_drawdowns, final_equity = self.batch_fitness_evaluation(features, prices)
         
         # 更新最优个体
         best_idx = torch.argmax(fitness_scores).item()
@@ -508,7 +486,9 @@ class WindowsGPUAcceleratedGA:
             'generation_time': gen_time,
             'system_memory_gb': used_memory,
             'mean_sharpe_ratio': torch.mean(sharpe_ratios).item(),
-            'mean_sortino_ratio': torch.mean(sortino_ratios).item()
+            'mean_sortino_ratio': torch.mean(sortino_ratios).item(),
+            'mean_max_drawdown': torch.mean(max_drawdowns).item(), # 添加平均最大回撤
+            'mean_overall_return': (torch.mean(final_equity).item() - 1) * 100 # 添加平均整体收益率
         }
         
         return stats
@@ -586,14 +566,17 @@ class WindowsGPUAcceleratedGA:
                 stats = self.evolve_one_generation(features, prices)
                 fitness_history.append(stats)
                 
-                # 重新加入日志记录
-                tqdm.write(f"第 {stats['generation']} 代: 最佳适应度={stats['best_fitness']:.4f}, "
-                           f"平均适应度={stats['mean_fitness']:.4f}, "
-                           f"夏普比率={stats['mean_sharpe_ratio']:.4f}, "
-                           f"索提诺比率={stats['mean_sortino_ratio']:.4f}, "
-                           f"用时={stats['generation_time']:.2f}秒, "
-                           f"内存={stats['system_memory_gb']:.2f}GB")
-                
+                # 每10代使用tqdm.write输出一次详细信息
+                if gen % 10 == 0:
+                    tqdm.write(f"第 {stats['generation']} 代: 最佳适应度={stats['best_fitness']:.4f}, "
+                               f"平均适应度={stats['mean_fitness']:.4f}, "
+                               f"夏普比率={stats['mean_sharpe_ratio']:.4f}, "
+                               f"索提诺比率={stats['mean_sortino_ratio']:.4f}, "
+                               f"最大回撤={stats['mean_max_drawdown']:.4f}, "
+                               f"整体收益率={stats['mean_overall_return']:.2f}%, "
+                               f"用时={stats['generation_time']:.2f}秒, "
+                               f"内存={stats['system_memory_gb']:.2f}GB")
+
                 # 每代结果记录
                 if save_generation_results and stats['generation'] % generation_log_interval == 0:
                     save_generation_log(stats)
@@ -617,7 +600,7 @@ class WindowsGPUAcceleratedGA:
                         no_improvement_count += 1
                     
                     if no_improvement_count >= self.config.early_stop_patience:
-                        tqdm.write(f"连续{self.config.early_stop_patience}代没有改进，提前停止。")
+                        tqdm.write(f"\n连续{self.config.early_stop_patience}代没有改进，提前停止。")
                         break
                 
                 # 保存检查点

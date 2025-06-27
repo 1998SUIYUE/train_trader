@@ -50,8 +50,8 @@ def main():
         "early_stop_patience": 50,       # 无改进停止代数 (推荐: 30-100)
         
         # --- 交易策略参数 (Sigmoid[0,1]区间) ---
-        "buy_threshold": 0.5,            # 买入阈值 (>0.5偏向买入, 推荐: 0.55-0.8)
-        "sell_threshold": 0.5,           # 卖出阈值 (<0.5偏向卖出, 推荐: 0.2-0.45)
+        "buy_threshold": 0.6,            # 买入阈值 (>0.5偏向买入, 推荐: 0.55-0.8)
+        "sell_threshold": 0.4,           # 卖出阈值 (<0.5偏向卖出, 推荐: 0.2-0.45)
         
         # --- 风险管理参数 ---
         "stop_loss": 0.05,               # 止损比例 (推荐: 0.02-0.08)
@@ -68,7 +68,7 @@ def main():
         # --- 保存设置 ---
         "results_dir": "../results",     # 结果输出目录
         "save_checkpoints": True,        # 是否保存检查点
-        "checkpoint_interval": 5,       # 检查点保存间隔
+        "checkpoint_interval": 300,       # 检查点保存间隔
         "auto_save_best": True,          # 是否自动保存最佳个体
         
         # --- 日志设置 ---
