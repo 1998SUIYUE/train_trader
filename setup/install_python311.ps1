@@ -162,9 +162,8 @@ except Exception as e:
                 
                 Write-Host "`n使用说明:" -ForegroundColor Cyan
                 Write-Host "1. 使用Python 3.11: $pythonCmd" -ForegroundColor White
-                Write-Host "2. 运行GPU训练: $pythonCmd core/main_gpu.py --data_file data/your_data.csv" -ForegroundColor White
-                Write-Host "3. 运行CPU训练: $pythonCmd core/main_cpu.py --data_file data/your_data.csv" -ForegroundColor White
-                Write-Host "4. 测试环境: $pythonCmd setup/test_environment.ps1" -ForegroundColor White
+                Write-Host "2. 运行训练: $pythonCmd core/main_gpu.py --data_file data/your_data.csv" -ForegroundColor White
+                Write-Host "3. 测试环境: $pythonCmd setup/test_environment.ps1" -ForegroundColor White
                 
                 # 创建便捷启动脚本
                 $launchScript = @"

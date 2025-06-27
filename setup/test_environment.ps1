@@ -98,8 +98,7 @@ if ($python311Available) {
     
     # 显示使用说明
     Write-Host "`n使用说明:" -ForegroundColor Cyan
-    Write-Host "运行GPU训练: $pythonCommand core/main_gpu.py --data_file data/your_data.csv" -ForegroundColor White
-    Write-Host "运行CPU训练: $pythonCommand core/main_cpu.py --data_file data/your_data.csv" -ForegroundColor White
+    Write-Host "运行训练: $pythonCommand core/main_gpu.py --data_file data/your_data.csv" -ForegroundColor White
     Write-Host "安装包: $pythonCommand -m pip install package_name" -ForegroundColor White
     
 } else {

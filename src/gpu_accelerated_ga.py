@@ -4,7 +4,7 @@ Windows版GPU加速遗传算法模块
 """
 
 import torch
-
+import json
 import numpy as np
 from typing import Tuple, Optional, Dict, Any
 import time
@@ -520,7 +520,10 @@ class WindowsGPUAcceleratedGA:
     
     def evolve(self, features: torch.Tensor, prices: torch.Tensor,
                save_checkpoints: bool = False, checkpoint_dir: Optional[Path] = None,
-               checkpoint_interval: int = 50) -> Dict[str, Any]:
+               checkpoint_interval: int = 50, continuous_training: bool = False,
+               save_generation_results: bool = False, generation_log_file: Optional[Path] = None,
+               generation_log_interval: int = 1, auto_save_best: bool = False,
+               output_dir: Optional[Path] = None) -> Dict[str, Any]:
         """
         执行遗传算法进化过程
 
@@ -530,6 +533,12 @@ class WindowsGPUAcceleratedGA:
             save_checkpoints: 是否保存检查点
             checkpoint_dir: 检查点保存目录
             checkpoint_interval: 检查点保存间隔
+            continuous_training: 是否启用持续训练模式
+            save_generation_results: 是否每代保存结果
+            generation_log_file: 每代结果日志文件路径
+            generation_log_interval: 每隔多少代记录到文件
+            auto_save_best: 是否自动保存最佳个体
+            output_dir: 输出目录
 
         Returns:
             包含训练结果的字典
@@ -537,6 +546,7 @@ class WindowsGPUAcceleratedGA:
         total_start_time = time.time()
         fitness_history = []
         no_improvement_count = 0
+        last_best_fitness = self.best_fitness
         
         # 注意：种群初始化现在由外部调用者（如main.py）处理
         if self.population is None:
@@ -546,40 +556,89 @@ class WindowsGPUAcceleratedGA:
         print("--- 开始进化 ---")
         print(f"输入特征形状: {features.shape}")
         print(f"输入价格形状: {prices.shape}")
+        print(f"持续训练模式: {'启用' if continuous_training else '禁用'}")
+        print(f"每代结果记录: {'启用' if save_generation_results else '禁用'}")
+        if generation_log_file:
+            print(f"结果日志文件: {generation_log_file}")
         print("------------------")
 
         # 从已加载的代数开始，或从0开始
         start_gen = self.generation
+        
+        # 确定最大代数
+        if continuous_training and self.config.max_generations == -1:
+            max_generations = float('inf')
+            print("🔄 持续训练模式：将无限期训练，按Ctrl+C停止")
+        else:
+            max_generations = self.config.max_generations
 
-        # 使用tqdm创建进度条
-        for gen in range(start_gen, self.config.max_generations):
-            stats = self.evolve_one_generation(features, prices)
-            fitness_history.append(stats)
-            
-            # 重新加入日志记录
-            tqdm.write(f"第 {stats['generation']} 代: 最佳适应度={stats['best_fitness']:.4f}, "
-                       f"平均适应度={stats['mean_fitness']:.4f}, "
-                       f"夏普比率={stats['mean_sharpe_ratio']:.4f}, "
-                       f"索提诺比率={stats['mean_sortino_ratio']:.4f}, "
-                       f"用时={stats['generation_time']:.2f}秒, "
-                       f"内存={stats['system_memory_gb']:.2f}GB")
-            
-            # 检查早期停止
-            if stats['best_fitness'] > self.best_fitness:
-                self.best_fitness = stats['best_fitness']
-                no_improvement_count = 0
-            else:
-                no_improvement_count += 1
-            
-            if no_improvement_count >= self.config.early_stop_patience:
-                tqdm.write(f"连续{self.config.early_stop_patience}代没有改进，提前停止。")
-                break
-            
-            # 保存检查点
-            if save_checkpoints and checkpoint_dir and (gen + 1) % checkpoint_interval == 0:
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                checkpoint_path = checkpoint_dir / f"checkpoint_gen_{gen+1}.pt"
-                self.save_checkpoint(str(checkpoint_path))
+        # 初始化每代结果记录
+        def save_generation_log(stats_data):
+            """保存每代结果到日志文件"""
+            if save_generation_results and generation_log_file:
+                try:
+                    # 添加时间戳
+                    stats_data['timestamp'] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # 以追加模式写入JSONL格式
+                    with open(generation_log_file, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(stats_data, ensure_ascii=False) + '\n')
+                except Exception as e:
+                    tqdm.write(f"警告：保存每代结果失败: {e}")
+
+        # 主训练循环
+        gen = start_gen
+        try:
+            while gen < max_generations:
+                stats = self.evolve_one_generation(features, prices)
+                fitness_history.append(stats)
+                
+                # 重新加入日志记录
+                tqdm.write(f"第 {stats['generation']} 代: 最佳适应度={stats['best_fitness']:.4f}, "
+                           f"平均适应度={stats['mean_fitness']:.4f}, "
+                           f"夏普比率={stats['mean_sharpe_ratio']:.4f}, "
+                           f"索提诺比率={stats['mean_sortino_ratio']:.4f}, "
+                           f"用时={stats['generation_time']:.2f}秒, "
+                           f"内存={stats['system_memory_gb']:.2f}GB")
+                
+                # 每代结果记录
+                if save_generation_results and stats['generation'] % generation_log_interval == 0:
+                    save_generation_log(stats)
+                
+                # 自动保存最佳个体
+                if auto_save_best and output_dir and stats['best_fitness'] > last_best_fitness:
+                    try:
+                        best_path = output_dir / f"best_individual_gen_{stats['generation']}.npy"
+                        np.save(best_path, self.gpu_manager.to_cpu(self.best_individual))
+                        tqdm.write(f"💾 新最佳个体已保存: {best_path}")
+                        last_best_fitness = stats['best_fitness']
+                    except Exception as e:
+                        tqdm.write(f"警告：保存最佳个体失败: {e}")
+                
+                # 检查早期停止（仅在非持续训练模式下）
+                if not continuous_training:
+                    if stats['best_fitness'] > self.best_fitness:
+                        self.best_fitness = stats['best_fitness']
+                        no_improvement_count = 0
+                    else:
+                        no_improvement_count += 1
+                    
+                    if no_improvement_count >= self.config.early_stop_patience:
+                        tqdm.write(f"连续{self.config.early_stop_patience}代没有改进，提前停止。")
+                        break
+                
+                # 保存检查点
+                if save_checkpoints and checkpoint_dir and (gen + 1) % checkpoint_interval == 0:
+                    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                    checkpoint_path = checkpoint_dir / f"checkpoint_gen_{gen+1}.pt"
+                    self.save_checkpoint(str(checkpoint_path))
+                
+                gen += 1
+                
+        except KeyboardInterrupt:
+            tqdm.write("\n🛑 用户中断训练")
+            if continuous_training:
+                tqdm.write("持续训练已停止")
         
         total_time = time.time() - total_start_time
         tqdm.write(f"遗传算法进化完成，总用时: {total_time:.2f}秒")

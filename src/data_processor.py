@@ -301,11 +301,8 @@ class GPUDataProcessor:
             # 清理潜在的NaN或inf值
             normalized_windows = torch.nan_to_num(normalized_windows, nan=0.0, posinf=0.0, neginf=0.0)
 
-            print("\n--- 归一化数据展示 (滚动标准化) ---")
-            print(f"归一化后形状: {normalized_windows.shape}")
-            if normalized_windows.shape[0] > 0:
-                print(f"第一个窗口的归一化数据 (前5行):\n{self.gpu_manager.to_cpu(normalized_windows[0, :5, :])}")
-            print("-------------------------------------\n")
+
+
 
             batch_features = normalized_windows.reshape(batch_size, -1)
         

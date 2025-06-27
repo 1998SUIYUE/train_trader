@@ -40,16 +40,22 @@ def main():
         "normalization": "rolling",  # 归一化方法: 'relative', 'rolling', 'minmax_local', 'hybrid'
 
         # --- 遗传算法参数 ---
-        "population_size": 500,      # 种群大小 (GPU建议500-1000)
-        "generations": 2,          # 最大进化代数
+        "population_size": 5,      # 种群大小 (GPU建议500-1000)
+        "generations": -1,           # 最大进化代数 (-1表示无限训练)
         "mutation_rate": 0.01,       # 变异率 (建议0.01-0.05)
         "crossover_rate": 0.8,       # 交叉率 (建议0.7-0.9)
         "elite_ratio": 0.1,          # 精英比例 (建议0.05-0.1)
 
         # --- 检查点参数 ---
         "save_checkpoints": True,    # 是否自动保存检查点
-        "checkpoint_interval": 1,   # 每隔多少代保存一次
-        "results_dir": "../results"  # 所有结果和日志的输出目录
+        "checkpoint_interval": 10,   # 每隔多少代保存一次
+        "results_dir": "../results", # 所有结果和日志的输出目录
+        
+        # --- 新增：持续训练参数 ---
+        "continuous_training": True, # 是否启用持续训练模式
+        "save_generation_results": True,  # 是否每代保存结果
+        "generation_log_interval": 1,     # 每隔多少代记录到文件
+        "auto_save_best": True,           # 是否自动保存最佳个体
     }
     # ==============================================================================
     # ======================= 参数修改区域结束 ==================================
@@ -140,12 +146,24 @@ def main():
 
         # --- 7. 开始进化 ---
         print("开始进化过程...")
+        
+        # 使用固定的日志文件名，所有训练结果都追加到同一个文件
+        generation_log_file = output_dir / "training_history.jsonl"
+        print(f"📝 训练日志将写入: {generation_log_file}")
+        
         results = ga.evolve(
             train_features,
             train_labels,
             save_checkpoints=TRAINING_CONFIG["save_checkpoints"],
             checkpoint_dir=checkpoint_dir,
-            checkpoint_interval=TRAINING_CONFIG["checkpoint_interval"]
+            checkpoint_interval=TRAINING_CONFIG["checkpoint_interval"],
+            # 新增参数
+            continuous_training=TRAINING_CONFIG["continuous_training"],
+            save_generation_results=TRAINING_CONFIG["save_generation_results"],
+            generation_log_file=generation_log_file,
+            generation_log_interval=TRAINING_CONFIG["generation_log_interval"],
+            auto_save_best=TRAINING_CONFIG["auto_save_best"],
+            output_dir=output_dir
         )
 
         # --- 8. 保存最终结果 ---
@@ -156,22 +174,7 @@ def main():
         best_individual_path = output_dir / f"best_individual_{timestamp}.npy"
         np.save(best_individual_path, results['best_individual'])
         
-        # 保存训练历史
-        history_path = output_dir / f"training_history_{timestamp}.json"
-        with open(history_path, 'w', encoding='utf-8') as f:
-            # 将Tensor转换为列表以便JSON序列化
-            for record in results['fitness_history']:
-                for key, value in record.items():
-                    if isinstance(value, torch.Tensor):
-                        record[key] = value.item()
-            json.dump(results['fitness_history'], f, indent=2, ensure_ascii=False)
-
-        # 保存本次运行的配置
-        config_path = output_dir / f"config_{timestamp}.json"
-        # 将Path对象转为字符串
-        TRAINING_CONFIG["data_directory"] = str(data_dir)
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(TRAINING_CONFIG, f, indent=2, ensure_ascii=False)
+        # 训练历史已通过实时日志记录，无需重复保存
 
         # --- 9. 输出最终报告 ---
         print("="*60)
@@ -180,7 +183,9 @@ def main():
         print(f"  - 最佳适应度: {results['best_fitness']:.4f}")
         print(f"  - 总训练时间: {results['total_time']:.2f}秒")
         print(f"  - 最终代数:   {results['final_generation']}")
-        print(f"  - 结果已保存到: {output_dir}")
+        print(f"  - 最佳个体:   {best_individual_path}")
+        print(f"  - 实时日志:   {generation_log_file}")
+        print(f"  - 结果目录:   {output_dir}")
         print("="*60)
 
     except Exception as e:

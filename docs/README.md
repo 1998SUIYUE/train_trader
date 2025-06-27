@@ -17,11 +17,6 @@
 .\setup\test_environment.ps1
 ```
 
-#### 方案B: CPU版本（Python 3.13兼容）
-```powershell
-# 直接使用CPU版本，无需额外配置
-python core/main_cpu.py --data_file data/your_data.csv
-```
 
 ### 2. 准备数据
 
@@ -34,14 +29,8 @@ python core/main_cpu.py --data_file data/your_data.csv
 
 ### 3. 开始训练
 
-#### GPU版本
 ```powershell
 py -3.11 core/main_gpu.py --data_file data/your_data.csv --population_size 500 --generations 300
-```
-
-#### CPU版本
-```powershell
-python core/main_cpu.py --data_file data/your_data.csv --population_size 200 --generations 100
 ```
 
 ## 📁 项目结构
@@ -49,12 +38,12 @@ python core/main_cpu.py --data_file data/your_data.csv --population_size 200 --g
 ```
 trading_ai_project/
 ├── 📁 core/                    # 核心程序
-│   ├── main_gpu.py            # GPU版本主程序
-│   └── main_cpu.py            # CPU版本主程序
+│   └── main_gpu.py            # GPU版本主程序
 ├── 📁 src/                     # 源代码模块
-│   ├── gpu_accelerated_ga_windows.py  # GPU遗传算法
-│   ├── gpu_utils_windows.py   # GPU工具
-│   └── data_processor.py      # 数据处理
+│   ├── gpu_accelerated_ga.py  # GPU遗传算法
+│   ├── gpu_utils.py           # GPU工具
+│   ├── data_processor.py      # 数据处理
+│   └── normalization_strategies.py  # 归一化策略
 ├── 📁 setup/                   # 环境配置
 │   ├── install_python311.ps1  # Python安装脚本
 │   └── test_environment.ps1   # 环境测试脚本
@@ -70,13 +59,13 @@ trading_ai_project/
 
 ### 主要参数
 
-| 参数 | 说明 | GPU版本默认值 | CPU版本默认值 |
-|------|------|---------------|---------------|
-| `--population_size` | 种群大小 | 500 | 200 |
-| `--generations` | 进化代数 | 300 | 100 |
-| `--window_size` | 滑动窗口大小 | 350 | 350 |
-| `--mutation_rate` | 变异率 | 0.01 | 0.01 |
-| `--crossover_rate` | 交叉率 | 0.8 | 0.8 |
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--population_size` | 种群大小 | 500 |
+| `--generations` | 进化代数 | 300 |
+| `--window_size` | 滑动窗口大小 | 350 |
+| `--mutation_rate` | 变异率 | 0.01 |
+| `--crossover_rate` | 交叉率 | 0.8 |
 
 ### 归一化方法
 
@@ -97,21 +86,20 @@ trading_ai_project/
 - **批量计算**: 向量化操作提升效率
 - **内存管理**: 智能内存池减少开销
 
-## 📊 性能对比
+## 📊 性能特点
 
-| 版本 | 硬件要求 | 训练速度 | 种群规模 | 适用场景 |
-|------|----------|----------|----------|----------|
-| GPU版本 | AMD GPU + Python 3.11 | 🚀🚀🚀🚀🚀 | 500-1000 | 大规模训练 |
-| CPU版本 | 任意CPU + Python 3.13 | 🚀🚀🚀 | 100-500 | 快速测试 |
+| 硬件要求 | 训练速度 | 种群规模 | 适用场景 |
+|----------|----------|----------|----------|
+| AMD GPU + Python 3.11 | 🚀🚀🚀🚀🚀 | 500-1000 | 大规模训练 |
 
 ## 📈 结果分析
 
 训练完成后，结果保存在 `results/` 目录：
 
 - `best_individual_*.npy`: 最优个体基因
-- `training_history_*.json`: 训练历史记录
-- `config_*.json`: 训练配置参数
-- `training_*.log`: 详细日志
+- `generation_log_*.jsonl`: 每代训练实时日志
+- `best_individual_gen_*.npy`: 训练过程中的最佳个体（如启用自动保存）
+- `checkpoints/`: 训练检查点文件
 
 ## 🛠️ 故障排除
 
@@ -123,7 +111,7 @@ trading_ai_project/
 
 2. **GPU不可用**
    - 检查AMD GPU驱动
-   - 使用CPU版本作为备选
+   - 确保安装了torch-directml
 
 3. **内存不足**
    - 减少种群大小

@@ -9,7 +9,7 @@
 - **GPU**: AMD GPU (可选，用于加速)
 
 ### 软件要求
-- **Python**: 3.11 (GPU版本) 或 3.13 (CPU版本)
+- **Python**: 3.11
 - **PowerShell**: 5.0+
 - **网络连接**: 下载依赖包
 
@@ -17,7 +17,7 @@
 
 ### 方法一：自动安装（推荐）
 
-#### 1. GPU版本安装
+#### 1. 系统安装
 ```powershell
 # 运行自动安装脚本
 .\setup\install_python311.ps1
@@ -84,11 +84,8 @@ py -3.13 --version
 
 ### 使用特定版本
 ```powershell
-# 使用Python 3.11运行GPU版本
+# 运行训练程序
 py -3.11 core/main_gpu.py --data_file data/your_data.csv
-
-# 使用Python 3.13运行CPU版本
-python core/main_cpu.py --data_file data/your_data.csv
 ```
 
 ## 🛠️ 故障排除
@@ -126,7 +123,7 @@ py -3.11 -m pip install torch-directml -i https://pypi.tuna.tsinghua.edu.cn/simp
 **解决方案**：
 1. 更新AMD显卡驱动
 2. 确保Windows支持DirectX 12
-3. 使用CPU版本作为备选
+3. 确保安装了torch-directml
 
 ### 问题4：权限不足
 **解决方案**：

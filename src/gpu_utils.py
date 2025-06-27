@@ -76,7 +76,7 @@ class WindowsGPUManager:
         else:
             tensor = torch.tensor(data, dtype=dtype)
         
-        print(f"数据已转移到GPU: {tensor.shape}, {tensor.dtype}")
+
         return tensor.to(self.device)
     
     def to_cpu(self, tensor: torch.Tensor) -> np.ndarray:
