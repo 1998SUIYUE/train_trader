@@ -82,9 +82,9 @@ def _calculate_fitness_metrics_jit(sum_returns: torch.Tensor, sum_sq_returns: to
                stability_weight * stability_scores)
 
     # 替换NaN
-    fitness = torch.nan_to_num(fitness, nan=-1e9)
-    sharpe_ratios = torch.nan_to_num(sharpe_ratios, nan=0.0)
-    sortino_ratios = torch.nan_to_num(sortino_ratios, nan=0.0)
+    fitness = torch.where(torch.isnan(fitness), -1e9, fitness)
+    sharpe_ratios = torch.where(torch.isnan(sharpe_ratios), 0.0, sharpe_ratios)
+    sortino_ratios = torch.where(torch.isnan(sortino_ratios), 0.0, sortino_ratios)
 
     return fitness, sharpe_ratios, sortino_ratios, max_drawdowns, equity
 
