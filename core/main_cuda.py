@@ -111,7 +111,7 @@ class CudaGAConfig:
         self.crossover_rate = crossover_rate
         self.elite_ratio = elite_ratio
         self.feature_dim = feature_dim
-        self.gene_length = feature_dim + 5  # 特征权重 + 5个风险参数
+        self.gene_length = feature_dim  # 只有特征权重
 
 # 简化的CUDA遗传算法
 class CudaGeneticAlgorithm:
@@ -141,17 +141,57 @@ class CudaGeneticAlgorithm:
         return self.population
     
     def evaluate_fitness(self, features, prices):
-        """简化的适应度评估"""
-        # 提取权重
-        weights = self.population[:, :self.config.feature_dim]
+        """纯特征权重适应度评估"""
+        # 整个基因就是权重
+        weights = self.population  # (pop_size, 1400)
         
         # 计算决策分数
-        scores = torch.mm(weights, features.T)
+        scores = torch.mm(weights, features.T)  # (pop_size, n_samples)
         
-        # 简化的适应度计算（这里应该实现实际的交易策略评估）
-        fitness = torch.mean(scores, dim=1) + torch.randn(self.config.population_size, device=self.device) * 0.01
+        # 使用固定阈值生成交易信号
+        buy_threshold = 0.1
+        sell_threshold = 0.1
+        
+        buy_signals = scores > buy_threshold
+        sell_signals = scores < -sell_threshold
+        
+        # 简化的回测计算
+        returns = self._simple_backtest(buy_signals, sell_signals, prices)
+        
+        # 计算夏普比率作为适应度
+        mean_returns = torch.mean(returns, dim=1)
+        std_returns = torch.std(returns, dim=1)
+        fitness = mean_returns / (std_returns + 1e-9)
         
         return fitness
+    
+    def _simple_backtest(self, buy_signals, sell_signals, prices):
+        """简化的回测计算"""
+        pop_size, n_samples = buy_signals.shape
+        
+        # 计算价格变化率
+        price_changes = torch.zeros(n_samples, device=self.device)
+        price_changes[1:] = (prices[1:] - prices[:-1]) / prices[:-1]
+        
+        # 初始化仓位和收益
+        positions = torch.zeros(pop_size, device=self.device)
+        returns = torch.zeros(pop_size, n_samples, device=self.device)
+        
+        for t in range(n_samples):
+            # 计算当前收益
+            period_return = positions * price_changes[t]
+            returns[:, t] = period_return
+            
+            # 更新仓位
+            # 买入信号且当前无仓位
+            can_buy = (positions == 0) & buy_signals[:, t]
+            positions = torch.where(can_buy, torch.ones_like(positions), positions)
+            
+            # 卖出信号且当前有仓位
+            can_sell = (positions > 0) & sell_signals[:, t]
+            positions = torch.where(can_sell, torch.zeros_like(positions), positions)
+        
+        return returns
     
     def evolve_one_generation(self, features, prices):
         """进化一代"""

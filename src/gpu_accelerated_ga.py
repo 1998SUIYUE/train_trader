@@ -19,7 +19,7 @@ from gpu_utils import WindowsGPUManager, get_windows_gpu_manager
 class WindowsGAConfig:
     """Windows遗传算法配置"""
     population_size: int = 500  # Windows上建议较小的种群
-    gene_length: int = 1405  # 1400特征权重 + 5风险参数
+    gene_length: int = 1400  # 只有1400个特征权重
     feature_dim: int = 1400
     mutation_rate: float = 0.01
     crossover_rate: float = 0.8
@@ -27,6 +27,20 @@ class WindowsGAConfig:
     tournament_size: int = 5
     max_generations: int = 500  # Windows上建议较少代数
     early_stop_patience: int = 30
+    
+    # 交易策略参数
+    buy_threshold: float = 0.1
+    sell_threshold: float = 0.1
+    
+    # 风险管理参数
+    stop_loss: float = 0.05
+    max_position: float = 1.0
+    max_drawdown: float = 0.2
+    
+    # 适应度函数权重
+    sharpe_weight: float = 0.5
+    drawdown_weight: float = 0.3
+    stability_weight: float = 0.2
     
     # Windows GPU优化参数
     batch_size: int = 500
@@ -108,40 +122,17 @@ class WindowsGPUAcceleratedGA:
             torch.manual_seed(seed)
             np.random.seed(seed)
         
-        # 在GPU上直接生成随机种群
+        # 在GPU上直接生成随机种群 - 只有1400个特征权重
         population = torch.randn(
             self.config.population_size, 
-            self.config.gene_length,
+            self.config.gene_length,  # 现在等于feature_dim (1400)
             device=self.device,
             dtype=torch.float32
-        )
-        
-        # 初始化权重部分 (前1400维)
-        population[:, :self.config.feature_dim] *= 0.1  # 小的初始权重
-        
-        # 初始化决策阈值 (1400-1402维)
-        population[:, self.config.feature_dim:self.config.feature_dim+2] = torch.rand(
-            self.config.population_size, 2, device=self.device
-        ) * 0.1 + 0.01  # 阈值范围 [0.01, 0.11]
-        
-        # 初始化风险参数 (1402-1405维)
-        # 止损比例 [0.02, 0.08]
-        population[:, self.config.feature_dim+2] = torch.rand(
-            self.config.population_size, device=self.device
-        ) * 0.06 + 0.02
-        
-        # 最大仓位比例 [0.2, 0.8]
-        population[:, self.config.feature_dim+3] = torch.rand(
-            self.config.population_size, device=self.device
-        ) * 0.6 + 0.2
-        
-        # 最大回撤限制 [0.05, 0.15]
-        population[:, self.config.feature_dim+4] = torch.rand(
-            self.config.population_size, device=self.device
-        ) * 0.1 + 0.05
+        ) * 0.1  # 小的初始权重
         
         self.population = population
         print(f"种群初始化完成: {population.shape}")
+        print("使用纯特征权重模式 - 所有交易决策都基于1400个特征权重")
         return population
     
     def batch_fitness_evaluation(self, features: torch.Tensor, prices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -163,21 +154,45 @@ class WindowsGPUAcceleratedGA:
         if prices.device != self.device:
             prices = prices.to(self.device)
         
-        # 提取基因组件
-        weights = self.population[:, :self.config.feature_dim]  # (pop_size, 1400)
-        buy_threshold = self.population[:, self.config.feature_dim]  # (pop_size,)
-        sell_threshold = self.population[:, self.config.feature_dim + 1]  # (pop_size,)
-        stop_loss = self.population[:, self.config.feature_dim + 2]  # (pop_size,)
-        max_position = self.population[:, self.config.feature_dim + 3]  # (pop_size,)
-        max_drawdown = self.population[:, self.config.feature_dim + 4]  # (pop_size,)
+        # 现在只有特征权重，所有决策都基于这1400个权重
+        weights = self.population  # (pop_size, 1400) - 整个基因就是权重
         
         # 批量计算决策分数 (GPU矩阵乘法)
-        # scores: (pop_size, n_samples)
-        scores = torch.mm(weights, features.T)
+        # raw_scores: (pop_size, n_samples) - 原始分数
+        raw_scores = torch.mm(weights, features.T)
         
-        # 向量化交易信号生成
-        buy_signals = scores > buy_threshold.unsqueeze(1)
-        sell_signals = scores < -sell_threshold.unsqueeze(1)
+        # 🎯 使用Sigmoid激活函数将分数映射到[0,1]区间
+        scores = torch.sigmoid(raw_scores)
+        print("scores",scores)
+
+        # 从配置中获取交易策略参数 (现在阈值应该在[0,1]区间)
+        buy_threshold = getattr(self.config, 'buy_threshold', 0.6)   # 默认0.6 (大于0.5表示偏向买入)
+        sell_threshold = getattr(self.config, 'sell_threshold', 0.4) # 默认0.4 (小于0.5表示偏向卖出)
+        
+        # 向量化交易信号生成 (基于[0,1]区间的scores)
+        buy_signals = scores > buy_threshold    # scores > 0.6 表示强烈买入信号
+        sell_signals = scores < sell_threshold  # scores < 0.4 表示强烈卖出信号
+        # 注意：0.4 < scores < 0.6 为中性区间，不产生交易信号
+        
+        # 📈 交易信号统计
+        total_signals = scores.numel()  # 总信号数 = 种群大小 × 时间步数
+        buy_count = torch.sum(buy_signals).item()
+        sell_count = torch.sum(sell_signals).item()
+        neutral_count = total_signals - buy_count - sell_count
+        buy_ratio = buy_count / total_signals * 100
+        sell_ratio = sell_count / total_signals * 100
+        neutral_ratio = neutral_count / total_signals * 100
+        
+        if self.generation % 10 == 0:
+            tqdm.write(f"  交易信号: 买入{buy_count}次({buy_ratio:.1f}%), 卖出{sell_count}次({sell_ratio:.1f}%), 中性{neutral_count}次({neutral_ratio:.1f}%)")
+            tqdm.write(f"  阈值设置: 买入>{buy_threshold}, 卖出<{sell_threshold}, 中性区间[{sell_threshold}, {buy_threshold}]")
+        else:
+            tqdm.write(f"  信号: 买入{buy_ratio:.1f}%, 卖出{sell_ratio:.1f}%, 中性{neutral_ratio:.1f}%")
+        
+        # 从配置中获取风险管理参数
+        stop_loss = getattr(self.config, 'stop_loss', 0.05)
+        max_position = getattr(self.config, 'max_position', 1.0)
+        max_drawdown = getattr(self.config, 'max_drawdown', 0.2)
         
         # 批量回测计算 (Windows优化版本)
         fitness_scores_tuple = self._vectorized_backtest_windows(
@@ -191,18 +206,18 @@ class WindowsGPUAcceleratedGA:
         return fitness_scores_tuple
     
     def _vectorized_backtest_windows(self, buy_signals: torch.Tensor, sell_signals: torch.Tensor, 
-                                   prices: torch.Tensor, stop_loss: torch.Tensor,
-                                   max_position: torch.Tensor, max_drawdown: torch.Tensor, generation: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                                   prices: torch.Tensor, stop_loss: float,
+                                   max_position: float, max_drawdown: float, generation: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Windows优化的向量化回测计算 (内存优化版)
+        Windows优化的向量化回测计算 (纯特征权重版本)
         
         Args:
             buy_signals: 买入信号 (pop_size, n_samples)
             sell_signals: 卖出信号 (pop_size, n_samples)
             prices: 价格序列 (n_samples,)
-            stop_loss: 止损比例 (pop_size,)
-            max_position: 最大仓位 (pop_size,)
-            max_drawdown: 最大回撤 (pop_size,)
+            stop_loss: 固定止损比例 (标量)
+            max_position: 固定最大仓位 (标量)
+            max_drawdown: 固定最大回撤 (标量)
             
         Returns:
             一个元组，包含 (适应度分数, 夏普比率, 索提诺比率)
@@ -261,7 +276,7 @@ class WindowsGPUAcceleratedGA:
                 
                 # 交易信号处理
                 can_buy = (positions == 0) & buy_signals[:, t] & (~force_close)
-                new_position = torch.where(can_buy, max_position, positions)
+                new_position = torch.where(can_buy, torch.full_like(positions, max_position), positions)
                 
                 can_sell = (positions > 0) & sell_signals[:, t]
                 new_position = torch.where(can_sell, torch.zeros_like(positions), new_position)
@@ -318,10 +333,15 @@ class WindowsGPUAcceleratedGA:
         downside_std = torch.sqrt(downside_variance)
         sortino_ratios = mean_returns / (downside_std + 1e-9) * np.sqrt(252)
 
+        # 从配置中获取适应度权重
+        sharpe_weight = getattr(self.config, 'sharpe_weight', 0.5)
+        drawdown_weight = getattr(self.config, 'drawdown_weight', 0.3)
+        stability_weight = getattr(self.config, 'stability_weight', 0.2)
+        
         # 综合适应度函数
-        fitness = (0.5 * sharpe_ratios -
-                   0.3 * max_drawdowns +
-                   0.2 * stability_scores)
+        fitness = (sharpe_weight * sharpe_ratios -
+                   drawdown_weight * max_drawdowns +
+                   stability_weight * stability_scores)
 
         # 使用 torch.nan_to_num 替换所有 NaN
         fitness = torch.nan_to_num(fitness, nan=-1e9) # 将NaN替换为一个非常小的值
@@ -432,35 +452,10 @@ class WindowsGPUAcceleratedGA:
         
         new_population[elite_count:] += mutation_mask[elite_count:] * mutation_values[elite_count:]
         
-        # 约束风险参数范围
-        self._constrain_risk_parameters(new_population)
-        
         self.population = new_population
         self.stats['genetic_op_times'].append(time.time() - start_time)
         
         return new_population
-    
-    def _constrain_risk_parameters(self, population: torch.Tensor):
-        """约束风险参数到合理范围"""
-        # 决策阈值 [0.001, 0.2]
-        population[:, self.config.feature_dim:self.config.feature_dim+2] = torch.clamp(
-            population[:, self.config.feature_dim:self.config.feature_dim+2], 0.001, 0.2
-        )
-        
-        # 止损比例 [0.01, 0.1]
-        population[:, self.config.feature_dim+2] = torch.clamp(
-            population[:, self.config.feature_dim+2], 0.01, 0.1
-        )
-        
-        # 最大仓位 [0.1, 1.0]
-        population[:, self.config.feature_dim+3] = torch.clamp(
-            population[:, self.config.feature_dim+3], 0.1, 1.0
-        )
-        
-        # 最大回撤 [0.02, 0.3]
-        population[:, self.config.feature_dim+4] = torch.clamp(
-            population[:, self.config.feature_dim+4], 0.02, 0.3
-        )
     
     def evolve_one_generation(self, features: torch.Tensor, prices: torch.Tensor) -> Dict[str, float]:
         """
@@ -520,10 +515,9 @@ class WindowsGPUAcceleratedGA:
     
     def evolve(self, features: torch.Tensor, prices: torch.Tensor,
                save_checkpoints: bool = False, checkpoint_dir: Optional[Path] = None,
-               checkpoint_interval: int = 50, continuous_training: bool = False,
-               save_generation_results: bool = False, generation_log_file: Optional[Path] = None,
-               generation_log_interval: int = 1, auto_save_best: bool = False,
-               output_dir: Optional[Path] = None) -> Dict[str, Any]:
+               checkpoint_interval: int = 50, save_generation_results: bool = False, 
+               generation_log_file: Optional[Path] = None, generation_log_interval: int = 1, 
+               auto_save_best: bool = False, output_dir: Optional[Path] = None) -> Dict[str, Any]:
         """
         执行遗传算法进化过程
 
@@ -533,7 +527,6 @@ class WindowsGPUAcceleratedGA:
             save_checkpoints: 是否保存检查点
             checkpoint_dir: 检查点保存目录
             checkpoint_interval: 检查点保存间隔
-            continuous_training: 是否启用持续训练模式
             save_generation_results: 是否每代保存结果
             generation_log_file: 每代结果日志文件路径
             generation_log_interval: 每隔多少代记录到文件
@@ -556,7 +549,7 @@ class WindowsGPUAcceleratedGA:
         print("--- 开始进化 ---")
         print(f"输入特征形状: {features.shape}")
         print(f"输入价格形状: {prices.shape}")
-        print(f"持续训练模式: {'启用' if continuous_training else '禁用'}")
+        print(f"训练代数: {self.config.max_generations if self.config.max_generations > 0 else '无限'}")
         print(f"每代结果记录: {'启用' if save_generation_results else '禁用'}")
         if generation_log_file:
             print(f"结果日志文件: {generation_log_file}")
@@ -566,9 +559,9 @@ class WindowsGPUAcceleratedGA:
         start_gen = self.generation
         
         # 确定最大代数
-        if continuous_training and self.config.max_generations == -1:
+        if self.config.max_generations == -1:
             max_generations = float('inf')
-            print("🔄 持续训练模式：将无限期训练，按Ctrl+C停止")
+            print("🔄 无限训练模式：将无限期训练，按Ctrl+C停止")
         else:
             max_generations = self.config.max_generations
 
@@ -615,8 +608,8 @@ class WindowsGPUAcceleratedGA:
                     except Exception as e:
                         tqdm.write(f"警告：保存最佳个体失败: {e}")
                 
-                # 检查早期停止（仅在非持续训练模式下）
-                if not continuous_training:
+                # 检查早期停止（仅在有限代数训练时）
+                if self.config.max_generations > 0:
                     if stats['best_fitness'] > self.best_fitness:
                         self.best_fitness = stats['best_fitness']
                         no_improvement_count = 0
@@ -637,8 +630,8 @@ class WindowsGPUAcceleratedGA:
                 
         except KeyboardInterrupt:
             tqdm.write("\n🛑 用户中断训练")
-            if continuous_training:
-                tqdm.write("持续训练已停止")
+            if self.config.max_generations == -1:
+                tqdm.write("无限训练已停止")
         
         total_time = time.time() - total_start_time
         tqdm.write(f"遗传算法进化完成，总用时: {total_time:.2f}秒")
