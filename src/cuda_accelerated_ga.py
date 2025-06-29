@@ -496,46 +496,62 @@ class CudaGPUAcceleratedGA:
 
 # ... (其他导入)
 
+@torch.jit.script
+def _jit_selection(population: torch.Tensor, fitness_scores: torch.Tensor, tournament_size: int) -> torch.Tensor:
+    """JIT编译的选择操作"""
+    population_size = population.shape[0]
+    selected_indices = torch.zeros(population_size, dtype=torch.long, device=population.device)
+    
+    for i in range(population_size):
+        tournament_indices = torch.randint(0, population_size, (tournament_size,), device=population.device)
+        tournament_fitness = fitness_scores[tournament_indices]
+        winner_idx = tournament_indices[torch.argmax(tournament_fitness)]
+        selected_indices[i] = winner_idx
+        
+    return population[selected_indices]
+
+@torch.jit.script
+def _jit_crossover(parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
+    """JIT编译的交叉操作"""
+    population_size, individual_size = parents.shape
+    offspring = parents.clone()
+    
+    pairs = torch.randperm(population_size, device=parents.device).view(-1, 2)
+    
+    for i in range(pairs.shape[0]):
+        parent1_idx = pairs[i, 0]
+        parent2_idx = pairs[i, 1]
+        
+        if torch.rand(1, device=parents.device) < crossover_rate:
+            mask = torch.rand(individual_size, device=parents.device) < 0.5
+            
+            temp = offspring[parent1_idx].clone()
+            offspring[parent1_idx][mask] = offspring[parent2_idx][mask]
+            offspring[parent2_idx][mask] = temp[mask]
+            
+    return offspring
+
 class CudaGPUAcceleratedGA:
-    # ... (其他代码)
+    """CUDA GPU加速遗传算法"""
+    
+    def __init__(self, config: CudaGAConfig, gpu_manager: CudaGPUManager):
+        # ... (原有的 __init__ 代码)
 
-    @torch.jit.script
-    def selection(self, population: torch.Tensor, fitness_scores: torch.Tensor, tournament_size: int) -> torch.Tensor:
-        """选择操作 - 锦标赛选择 (JIT编译优化)"""
-        population_size = population.shape[0]
-        selected_indices = torch.zeros(population_size, dtype=torch.long, device=population.device)
-        
-        for i in range(population_size):
-            tournament_indices = torch.randint(0, population_size, (tournament_size,), device=population.device)
-            tournament_fitness = fitness_scores[tournament_indices]
-            winner_idx = tournament_indices[torch.argmax(tournament_fitness)]
-            selected_indices[i] = winner_idx
-            
-        return population[selected_indices]
+    # ... (其他类方法)
 
-    @torch.jit.script
-    def crossover(self, parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
-        """交叉操作 - 均匀交叉 (JIT编译优化)"""
-        population_size, individual_size = parents.shape
-        offspring = parents.clone()
-        
-        pairs = torch.randperm(population_size, device=parents.device).view(-1, 2)
-        
-        for i in range(pairs.shape[0]):
-            parent1_idx = pairs[i, 0]
-            parent2_idx = pairs[i, 1]
-            
-            if torch.rand(1, device=parents.device) < crossover_rate:
-                mask = torch.rand(individual_size, device=parents.device) < 0.5
-                
-                # 使用临时变量安全交换
-                temp = offspring[parent1_idx].clone()
-                offspring[parent1_idx][mask] = offspring[parent2_idx][mask]
-                offspring[parent2_idx][mask] = temp[mask]
-                
-        return offspring
+    def selection(self) -> torch.Tensor:
+        """选择操作 - 锦标赛选择"""
+        with timer("selection", "ga"):
+            tournament_size = max(2, self.config.population_size // 20)
+            return _jit_selection(self.population, self.fitness_scores, tournament_size)
 
-    # ... (其他代码)
+    def crossover(self, parents: torch.Tensor) -> torch.Tensor:
+        """交叉操作 - 均匀交叉"""
+        with timer("crossover", "ga"):
+            return _jit_crossover(parents, self.config.crossover_rate)
+
+    # ... (其他类方法)
+
     
     def mutation(self, population: torch.Tensor) -> torch.Tensor:
         """变异操作"""
