@@ -242,27 +242,27 @@ class CudaGPUAcceleratedGA:
                     if self.config.use_torch_scan:
                         with timer("backtest_v3", "backtest"):
                             # 高精度模式 (使用v4 scan-style JIT实现)
-                            fitness_scores = self.backtest_optimizer.vectorized_backtest_v4_scan_style(
+                            fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self.backtest_optimizer.vectorized_backtest_v4_scan_style(
                                 signals, labels, buy_thresholds, sell_thresholds, 
                                 max_positions, stop_losses, max_drawdowns
                             )
                     else:
                         with timer("backtest_v2", "backtest"):
                             # 高速模式
-                            fitness_scores = self.backtest_optimizer.vectorized_backtest_v2(
+                            fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self.backtest_optimizer.vectorized_backtest_v2(
                                 signals, labels, buy_thresholds, sell_thresholds, max_positions, trade_positions
                             )
                 else:
                     # 使用内置回测方法
                     if self.config.use_torch_scan:
                         with timer("advanced_vectorized_backtest", "backtest"):
-                            fitness_scores = self._advanced_vectorized_backtest(
+                            fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self._advanced_vectorized_backtest(
                                 signals, labels, buy_thresholds, sell_thresholds, 
                                 stop_losses, max_positions, max_drawdowns
                             )
                     else:
                         with timer("vectorized_backtest", "backtest"):
-                            fitness_scores = self._vectorized_backtest(
+                            fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self._vectorized_backtest(
                                 signals, labels, buy_thresholds, sell_thresholds,
                                 stop_losses, max_positions, max_drawdowns
                             )
