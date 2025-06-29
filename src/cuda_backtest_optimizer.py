@@ -1,3 +1,4 @@
+
 """
 CUDA回测优化器
 专门针对CUDA环境优化的高性能回测实现
@@ -9,57 +10,91 @@ from typing import Tuple, Dict, Any
 import time
 import torch.jit
 
-# JIT编译的辅助函数，用于模拟scan操作
+# JIT编译的、独立的完整回测函数
+# 这是将for-loop JIT优化的正确且高效的模式
 @torch.jit.script
-def _functional_scan(fn, inputs, initial_state):
-    states = []
-    current_state = initial_state
-    # JIT-friendly way to get sequence length
-    seq_len = inputs[0].shape[1]
-    for t in range(seq_len):
-        step_inputs = (
-            inputs[0][:, t], inputs[1][:, t], inputs[2][:, t], inputs[3][:, t],
-            inputs[4][:, t], inputs[5][:, t], inputs[6][:, t]
-        )
-        current_state = fn(current_state, step_inputs)
-        states.append(current_state)
+def _run_jit_backtest(signals: torch.Tensor, returns: torch.Tensor,
+                        buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
+                        max_positions: torch.Tensor, stop_losses: torch.Tensor, 
+                        max_drawdowns: torch.Tensor) -> torch.Tensor:
     
-    final_states = {key: torch.stack([s[key] for s in states], dim=1) for key in initial_state.keys()}
-    return final_states
+    population_size, n_samples = signals.shape
+    device = signals.device
 
-# JIT编译的回测步进函数
-@torch.jit.script
-def _backtest_step_fn(state: Dict[str, torch.Tensor], inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """单个时间步的回测逻辑"""
-    portfolio_value, position, entry_price, running_max, last_price = \
-        state['portfolio_value'], state['position'], state['entry_price'], state['running_max'], state['last_price']
+    # 模拟价格序列
+    prices = torch.cat([torch.ones(1, device=device), 1 + returns]).cumprod(0)
+
+    # 初始化状态张量
+    positions = torch.zeros(population_size, n_samples + 1, device=device)
+    portfolio_values = torch.ones(population_size, n_samples + 1, device=device)
+    entry_prices = torch.zeros(population_size, device=device)
     
-    signal, price, buy_threshold, sell_threshold, max_position, stop_loss, max_drawdown_param = inputs
+    # 扩展参数维度以进行向量化操作
+    buy_thresh = buy_thresholds.unsqueeze(1)
+    sell_thresh = sell_thresholds.unsqueeze(1)
+    max_pos = max_positions.unsqueeze(1)
+    stop_loss_param = stop_losses.unsqueeze(1)
+    max_dd_param = max_drawdowns.unsqueeze(1)
 
-    price_return = (price - last_price) / (last_price + 1e-8)
-    updated_value = portfolio_value * (1 + position * price_return)
+    # JIT编译的for循环
+    for t in range(n_samples):
+        current_price = prices[t + 1]
+        current_positions = positions[:, t]
+        current_values = portfolio_values[:, t]
+        
+        # 1. 更新当前投资组合价值
+        updated_values = current_values * (1 + current_positions * returns[t])
+        
+        # 2. 计算当前回撤
+        # 此处简化处理：直接与历史所有时点比较，虽然效率稍低但JIT兼容
+        running_max = torch.max(portfolio_values[:, :t+1], dim=1)[0]
+        current_running_max = torch.maximum(running_max, updated_values)
+        current_drawdown = (current_running_max - updated_values) / (current_running_max + 1e-8)
 
-    new_running_max = torch.maximum(running_max, updated_value)
-    current_drawdown = (new_running_max - updated_value) / (new_running_max + 1e-8)
+        # 3. 止损决策
+        stop_loss_triggered = (current_positions > 0) & (entry_prices > 0) & (current_price < entry_prices * (1 - stop_loss_param.squeeze(1)))
 
-    stop_loss_triggered = (position > 0) & (entry_price > 0) & (price < entry_price * (1 - stop_loss))
+        # 4. 交易决策
+        can_buy = (current_positions == 0) & (signals[:, t] > buy_thresh.squeeze(1)) & (current_drawdown < max_dd_param.squeeze(1))
+        can_sell = (current_positions > 0) & ((signals[:, t] < sell_thresh.squeeze(1)) | stop_loss_triggered | (current_drawdown > max_dd_param.squeeze(1)))
+        
+        # 5. 执行交易并更新状态
+        new_positions = current_positions.clone()
+        new_positions = torch.where(can_buy, max_pos.squeeze(1), new_positions)
+        new_positions = torch.where(can_sell, torch.zeros_like(new_positions), new_positions)
+        
+        entry_prices = torch.where(can_buy, current_price, entry_prices)
+        entry_prices = torch.where(can_sell, torch.zeros_like(entry_prices), entry_prices)
+        
+        positions[:, t + 1] = new_positions
+        portfolio_values[:, t + 1] = updated_values
 
-    can_buy = (position == 0) & (signal > buy_threshold) & (current_drawdown < max_drawdown_param)
-    can_sell = (position > 0) & ((signal < sell_threshold) | stop_loss_triggered) | (current_drawdown > max_drawdown_param)
-
-    new_position = torch.where(can_buy, max_position, position)
-    new_position = torch.where(can_sell, torch.zeros_like(new_position), new_position)
+    # --- 性能指标计算 ---
+    # 计算最终组合价值
+    final_portfolio_values = portfolio_values
     
-    new_entry_price = torch.where(can_buy, price, entry_price)
-    new_entry_price = torch.where(can_sell, torch.zeros_like(new_entry_price), new_entry_price)
-
-    return {
-        'portfolio_value': updated_value,
-        'position': new_position,
-        'entry_price': new_entry_price,
-        'running_max': new_running_max,
-        'last_price': price
-    }
+    # 收益序列
+    returns_series = torch.diff(final_portfolio_values, dim=1) / (final_portfolio_values[:, :-1] + 1e-8)
+    
+    # 夏普比率
+    mean_returns = torch.mean(returns_series, dim=1)
+    std_returns = torch.std(returns_series, dim=1) + 1e-8
+    sharpe_ratios = mean_returns / std_returns
+    
+    # 最大回撤
+    running_max_final = torch.cummax(final_portfolio_values, dim=1)[0]
+    drawdowns_final = (running_max_final - final_portfolio_values) / (running_max_final + 1e-8)
+    max_drawdowns_calc = torch.max(drawdowns_final, dim=1)[0]
+    
+    # 交易频率
+    position_changes = torch.abs(torch.diff(positions, dim=1))
+    trade_counts = torch.sum(position_changes > 1e-6, dim=1).float()
+    normalized_trades = torch.clamp(trade_counts / n_samples, 0, 1)
+    
+    # 综合适应度
+    fitness = 0.5 * sharpe_ratios - 0.3 * max_drawdowns_calc + 0.2 * normalized_trades
+    
+    return torch.nan_to_num(fitness, nan=-10.0, posinf=0.0, neginf=-10.0)
 
 class CudaBacktestOptimizer:
     """CUDA优化的回测引擎"""
@@ -133,91 +168,66 @@ class CudaBacktestOptimizer:
         trade_frequencies = self._calculate_trade_frequencies(positions)
         return 0.6 * sharpe_ratios - 0.3 * max_drawdowns + 0.1 * trade_frequencies
 
-    def vectorized_backtest_v3(self, signals: torch.Tensor, returns: torch.Tensor,
-                              buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                              max_positions: torch.Tensor, stop_losses: torch.Tensor, 
-                              max_drawdowns: torch.Tensor) -> torch.Tensor:
-        # This is the JIT-compiled for-loop version.
-        # The implementation is complex and has been omitted for brevity in this example,
-        # but it is the same as the one we developed before.
-        pass # Placeholder for the actual v3 implementation
+    def vectorized_backtest_v3(self, *args, **kwargs):
+        """版本3：完整回测 (JIT for-loop)."""
+        return _run_jit_backtest(*args, **kwargs)
 
-    def vectorized_backtest_v4_scan(self, signals: torch.Tensor, returns: torch.Tensor,
-                                 buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                                 max_positions: torch.Tensor, stop_losses: torch.Tensor, 
-                                 max_drawdowns: torch.Tensor) -> torch.Tensor:
-        population_size, n_samples = signals.shape
-        prices = torch.cat([torch.ones(1, device=self.device), 1 + returns]).cumprod(0)
-
-        inputs = (
-            signals,
-            prices[1:],
-            buy_thresholds.unsqueeze(1).expand(-1, n_samples),
-            sell_thresholds.unsqueeze(1).expand(-1, n_samples),
-            max_positions.unsqueeze(1).expand(-1, n_samples),
-            stop_losses.unsqueeze(1).expand(-1, n_samples),
-            max_drawdowns.unsqueeze(1).expand(-1, n_samples)
-        )
-
-        initial_state = {
-            'portfolio_value': torch.ones(population_size, device=self.device),
-            'position': torch.zeros(population_size, device=self.device),
-            'entry_price': torch.zeros(population_size, device=self.device),
-            'running_max': torch.ones(population_size, device=self.device),
-            'last_price': torch.ones(population_size, device=self.device)
-        }
-
-        final_states = _functional_scan(_backtest_step_fn, inputs, initial_state)
-        portfolio_values = final_states['portfolio_value']
-
-        returns_series = torch.diff(portfolio_values, dim=1) / (portfolio_values[:, :-1] + 1e-8)
-        mean_returns = torch.mean(returns_series, dim=1)
-        std_returns = torch.std(returns_series, dim=1) + 1e-8
-        sharpe_ratios = mean_returns / std_returns
-        running_max_final = torch.cummax(portfolio_values, dim=1)[0]
-        drawdowns_final = (running_max_final - portfolio_values) / (running_max_final + 1e-8)
-        max_drawdowns_calc = torch.max(drawdowns_final, dim=1)[0]
-        position_changes = torch.abs(torch.diff(final_states['position'], dim=1))
-        trade_counts = torch.sum(position_changes > 1e-6, dim=1).float()
-        normalized_trades = torch.clamp(trade_counts / n_samples, 0, 1)
-        fitness = 0.5 * sharpe_ratios - 0.3 * max_drawdowns_calc + 0.2 * normalized_trades
-        return torch.nan_to_num(fitness, nan=-10.0, posinf=0.0, neginf=-10.0)
+    def vectorized_backtest_v4_scan_style(self, *args, **kwargs):
+        """版本4：完整回测 (Scan风格的JIT实现).
+        注意: JIT的最佳实践使其内部实现与v3相同。
+        """
+        return _run_jit_backtest(*args, **kwargs)
 
     def benchmark_methods(self, signals: torch.Tensor, returns: torch.Tensor,
                          buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
                          max_positions: torch.Tensor, stop_losses: torch.Tensor,
                          max_drawdowns: torch.Tensor) -> Dict[str, Any]:
+        """基准测试不同回测方法的性能"""
         methods = {
             'v1_simple': self.vectorized_backtest_v1,
             'v2_balanced': self.vectorized_backtest_v2,
-            'v3_complete': self.vectorized_backtest_v3,
-            'v4_scan': self.vectorized_backtest_v4_scan
+            'v3_jit_loop': self.vectorized_backtest_v3,
+            'v4_jit_scan': self.vectorized_backtest_v4_scan_style
         }
         results = {}
+        print("\nRunning benchmark...")
         for name, method in methods.items():
-            if name == 'v3_complete': continue # Skip for now
-            args = (signals[:10], returns, buy_thresholds[:10], sell_thresholds[:10], max_positions[:10])
-            if name in ['v4_scan']:
-                args += (stop_losses[:10], max_drawdowns[:10])
-            _ = method(*args)
-            torch.cuda.synchronize()
+            # Prepare arguments
+            if name in ['v1_simple', 'v2_balanced']:
+                warmup_args = (signals[:10], returns, buy_thresholds[:10], sell_thresholds[:10], max_positions[:10])
+                full_args = (signals, returns, buy_thresholds, sell_thresholds, max_positions)
+            else:
+                warmup_args = (signals[:10], returns, buy_thresholds[:10], sell_thresholds[:10], max_positions[:10], stop_losses[:10], max_drawdowns[:10])
+                full_args = (signals, returns, buy_thresholds, sell_thresholds, max_positions, stop_losses, max_drawdowns)
+            
+            # Warmup
+            try:
+                _ = method(*warmup_args)
+                torch.cuda.synchronize()
+            except Exception as e:
+                print(f"Warmup for {name} failed: {e}")
+                continue
+
+            # Benchmark
             start_time = time.time()
-            full_args = (signals, returns, buy_thresholds, sell_thresholds, max_positions)
-            if name in ['v4_scan']:
-                full_args += (stop_losses, max_drawdowns)
-            fitness = method(*full_args)
-            torch.cuda.synchronize()
-            elapsed_time = time.time() - start_time
-            results[name] = {
-                'time': elapsed_time,
-                'fitness_mean': torch.mean(fitness).item(),
-                'fitness_std': torch.std(fitness).item(),
-                'throughput': signals.shape[0] / elapsed_time
-            }
+            try:
+                fitness = method(*full_args)
+                torch.cuda.synchronize()
+                elapsed_time = time.time() - start_time
+                results[name] = {
+                    'time': elapsed_time,
+                    'fitness_mean': torch.mean(fitness).item(),
+                    'fitness_std': torch.std(fitness).item(),
+                    'throughput': signals.shape[0] / elapsed_time
+                }
+            except Exception as e:
+                print(f"Benchmark for {name} failed: {e}")
+                results[name] = {'time': -1, 'fitness_mean': -1, 'fitness_std': -1, 'throughput': -1}
+
         return results
 
-
 def test_cuda_backtest_optimizer():
+    """测试CUDA回测优化器"""
     print("=== CUDA回测优化器测试 ===")
     if not torch.cuda.is_available():
         print("CUDA不可用，跳过测试")
@@ -238,12 +248,15 @@ def test_cuda_backtest_optimizer():
         signals, returns, buy_thresholds, sell_thresholds, max_positions, stop_losses, max_drawdowns
     )
     print("\n基准测试结果:")
-    print("-" * 60)
-    print(f"{'方法':<15} {'时间(s)':<10} {'吞吐量':<15} {'适应度均值':<15}")
-    print("-" * 60)
+    print("-" * 70)
+    print(f"{'方法':<15} {'时间(s)':<12} {'吞吐量 (个/s)':<20} {'适应度均值':<15}")
+    print("-" * 70)
     for name, result in results.items():
-        print(f"{name:<15} {result['time']:<10.4f} {result['throughput']:<15.1f} {result['fitness_mean']:<15.6f}")
-    print("-" * 60)
+        if result['time'] > 0:
+            print(f"{name:<15} {result['time']:<12.4f} {result['throughput']:<20.1f} {result['fitness_mean']:<15.6f}")
+        else:
+            print(f"{name:<15} {'FAILED':<12}")
+    print("-" * 70)
 
 if __name__ == "__main__":
     test_cuda_backtest_optimizer()
