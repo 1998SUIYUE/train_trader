@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
 """
-实时训练进度监控工具
-监控正在进行的训练过程，实时显示进度和统计信息
+CUDA训练进度查看器
+实时显示CUDA训练的进度和统计信息
 """
 
 import json
 import time
-import argparse
-from pathlib import Path
 import os
-import sys
-
-# 尝试导入可选依赖
-try:
-    import matplotlib.pyplot as plt
-    import pandas as pd
-    import numpy as np
-    PLOTTING_AVAILABLE = True
-except ImportError:
-    PLOTTING_AVAILABLE = False
+from pathlib import Path
+import argparse
 
 def clear_screen():
     """清屏"""
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def load_latest_data(log_file):
-    """加载最新的训练数据"""
+def load_training_data(log_file):
+    """加载训练数据"""
     data = []
     try:
         if not Path(log_file).exists():
@@ -44,30 +34,36 @@ def load_latest_data(log_file):
         print(f"加载日志文件失败: {e}")
         return []
 
-def display_current_status(data):
-    """显示当前训练状态"""
+def display_progress(data):
+    """显示训练进度"""
     if not data:
-        print("📊 等待训练数据...")
+        print("📊 没有训练数据")
         return
     
     latest = data[-1]
     
-    # 基本信息
     print("=" * 80)
-    print("🚀 CUDA遗传算法训练实时监控")
+    print("🚀 CUDA遗传算法训练进度监控")
     print("=" * 80)
     
-    # 当前状态
+    # 基本信息
     print(f"📈 当前代数: {latest.get('generation', 0)}")
     print(f"🏆 最佳适应度: {latest.get('best_fitness', 0):.6f}")
-    print(f"📊 平均适应度: {latest.get('avg_fitness', 0):.6f}")
+    print(f"📊 平均适应度: {latest.get('mean_fitness', 0):.6f}")
     print(f"📉 标准差: {latest.get('std_fitness', 0):.6f}")
     print(f"⏱️  本代用时: {latest.get('generation_time', 0):.2f}秒")
-    print(f"🔄 无改进代数: {latest.get('no_improvement_count', 0)}")
     
-    # 内存使用情况
-    if 'gpu_memory_allocated' in latest:
-        print(f"🖥️  GPU内存: {latest['gpu_memory_allocated']:.2f}GB")
+    # 交易指标
+    if 'mean_sharpe_ratio' in latest:
+        print(f"📈 夏普比率: {latest['mean_sharpe_ratio']:.6f}")
+    if 'mean_sortino_ratio' in latest:
+        print(f"📊 索提诺比率: {latest['mean_sortino_ratio']:.6f}")
+    if 'mean_max_drawdown' in latest:
+        print(f"📉 最大回撤: {latest['mean_max_drawdown']:.6f}")
+    if 'mean_overall_return' in latest:
+        print(f"💰 总回报: {latest['mean_overall_return']:.6f}")
+    
+    # 系统信息
     if 'system_memory_gb' in latest:
         print(f"💾 系统内存: {latest['system_memory_gb']:.2f}GB")
     
@@ -83,7 +79,7 @@ def display_current_status(data):
         print(f"   总训练时间: {total_time/3600:.2f}小时")
         print(f"   平均每代: {avg_time:.2f}秒")
         
-        # 改进趋势
+        # 最近趋势
         recent_10 = data[-10:] if len(data) >= 10 else data
         recent_best = [d.get('best_fitness', 0) for d in recent_10]
         if len(recent_best) > 1:
@@ -92,8 +88,8 @@ def display_current_status(data):
     
     print("=" * 80)
 
-def display_progress_chart(data, max_points=50):
-    """显示简单的ASCII进度图表"""
+def display_fitness_chart(data, max_points=50):
+    """显示适应度趋势图"""
     if len(data) < 2:
         return
     
@@ -129,9 +125,9 @@ def display_progress_chart(data, max_points=50):
     print(" " * 10 + "+" + "-" * len(normalized))
     print(f"         最小值: {min_val:.4f}, 最大值: {max_val:.4f}")
 
-def watch_training(log_file, refresh_interval=2.0, show_chart=True):
-    """监控训练进度"""
-    print(f"🔍 开始监控训练日志: {log_file}")
+def watch_training(log_file, refresh_interval=3.0, show_chart=True):
+    """实时监控训练进度"""
+    print(f"🔍 开始监控CUDA训练日志: {log_file}")
     print(f"🔄 刷新间隔: {refresh_interval}秒")
     print("按 Ctrl+C 停止监控\n")
     
@@ -144,13 +140,13 @@ def watch_training(log_file, refresh_interval=2.0, show_chart=True):
                 current_size = Path(log_file).stat().st_size
                 if current_size != last_size:
                     # 文件有更新，重新加载数据
-                    data = load_latest_data(log_file)
+                    data = load_training_data(log_file)
                     
                     clear_screen()
-                    display_current_status(data)
+                    display_progress(data)
                     
-                    if show_chart and PLOTTING_AVAILABLE:
-                        display_progress_chart(data)
+                    if show_chart:
+                        display_fitness_chart(data)
                     
                     last_size = current_size
                     print(f"\n⏰ 最后更新: {time.strftime('%H:%M:%S')}")
@@ -167,28 +163,24 @@ def watch_training(log_file, refresh_interval=2.0, show_chart=True):
         print("\n\n👋 监控已停止")
 
 def main():
-    parser = argparse.ArgumentParser(description='实时训练进度监控工具')
+    parser = argparse.ArgumentParser(description='CUDA训练进度查看器')
     parser.add_argument('log_file', nargs='?', help='日志文件路径')
-    parser.add_argument('--interval', '-i', type=float, default=2.0, help='刷新间隔(秒)')
-    parser.add_argument('--no-chart', action='store_true', help='不显示ASCII图表')
-    parser.add_argument('--auto', action='store_true', help='自动查找最新的训练日志文件')
+    parser.add_argument('--watch', '-w', action='store_true', help='实时监控模式')
+    parser.add_argument('--interval', '-i', type=float, default=3.0, help='刷新间隔(秒)')
+    parser.add_argument('--no-chart', action='store_true', help='不显示图表')
+    parser.add_argument('--tail', type=int, help='只显示最后N条记录')
     
     args = parser.parse_args()
     
-    # 如果没有指定文件，自动启用auto模式
+    # 如果没有指定文件，自动查找
     if not args.log_file:
-        args.auto = True
-    
-    # 如果启用了auto模式或没有指定文件，自动查找最新日志
-    if args.auto or not args.log_file:
-        # 查找可能的日志文件位置
         possible_paths = [
-            Path("../results/training_history_cuda.jsonl"),
             Path("results/training_history_cuda.jsonl"),
-            Path("training_history_cuda.jsonl"),
-            Path("../results/training_history.jsonl"),
             Path("results/training_history.jsonl"),
-            Path("training_history.jsonl")
+            Path("training_history_cuda.jsonl"),
+            Path("training_history.jsonl"),
+            Path("../results/training_history_cuda.jsonl"),
+            Path("../results/training_history.jsonl")
         ]
         
         log_file = None
@@ -203,25 +195,27 @@ def main():
         else:
             print("❌ 未找到训练日志文件")
             print("请确保训练已经开始并生成了日志文件")
-            print("")
-            print("可能的日志文件位置:")
-            for path in possible_paths:
-                print(f"  - {path}")
-            print("")
-            print("💡 提示:")
-            print("  1. 先启动训练: python core/main_cuda.py")
-            print("  2. 然后运行监控: python tools/watch_training_progress.py")
-            print("")
-            print("或者手动指定日志文件:")
-            print("  python tools/watch_training_progress.py <日志文件路径>")
             return
     
-    # 开始监控
-    watch_training(
-        args.log_file, 
-        refresh_interval=args.interval,
-        show_chart=not args.no_chart
-    )
+    if not Path(args.log_file).exists():
+        print(f"❌ 文件不存在: {args.log_file}")
+        print("请确保训练已经开始并生成了日志文件")
+        return
+    
+    # 加载数据
+    data = load_training_data(args.log_file)
+    
+    if args.tail:
+        data = data[-args.tail:]
+    
+    if args.watch:
+        # 实时监控模式
+        watch_training(args.log_file, args.interval, not args.no_chart)
+    else:
+        # 一次性显示模式
+        display_progress(data)
+        if not args.no_chart:
+            display_fitness_chart(data)
 
 if __name__ == "__main__":
     main()
