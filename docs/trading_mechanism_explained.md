@@ -165,18 +165,18 @@ max_drawdowns = (peak_equity - equity) / peak_equity
 ```
 - **衡量**: 从历史最高点到当前的最大损失比例
 
-#### 4. 交易稳定性
+#### 4. 交易频率 (负向指标)
 ```python
-stability_scores = 1.0 / (1.0 + trade_counts / n_samples)
+trade_frequency = torch.sum(position_changes > 0, dim=1).float() / n_samples
+normalized_frequency = torch.clamp(trade_frequency, 0.0, 1.0)
 ```
-- **衡量**: 交易频率的合理性
-- **避免**: 过度交易
+- **衡量**: 交易活跃度，交易越频繁，适应度越低
 
 ### 综合适应度函数
 ```python
 fitness = (0.5 * sharpe_ratios -      # 50%权重：风险调整收益
-           0.3 * max_drawdowns +      # 30%权重：回撤控制
-           0.2 * stability_scores)    # 20%权重：交易稳定性
+           0.3 * max_drawdowns -      # 30%权重：回撤控制
+           0.2 * normalized_frequency)    # 20%权重：交易频率惩罚
 ```
 
 ## 🧬 进化机制

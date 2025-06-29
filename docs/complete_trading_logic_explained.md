@@ -361,10 +361,11 @@ drawdowns = (running_max - equity_curve) / running_max
 max_drawdown = torch.max(drawdowns, dim=1)[0]
 ```
 
-#### 4. 交易稳定性
+#### 4. 交易频率 (负向指标)
 ```python
-# 惩罚过度交易
-stability_score = 1.0 / (1.0 + trade_counts / n_samples)
+# 衡量交易活跃度，交易越频繁，适应度越低
+trade_frequency = torch.sum(position_changes > 0, dim=1).float() / n_samples
+normalized_frequency = torch.clamp(trade_frequency, 0.0, 1.0)
 ```
 
 ### 综合适应度函数
@@ -372,8 +373,8 @@ stability_score = 1.0 / (1.0 + trade_counts / n_samples)
 # 加权组合多个指标
 fitness = (
     0.5 * sharpe_ratios +      # 50%权重：风险调整收益
-    (-0.3) * max_drawdowns +   # 30%权重：回撤惩罚 (负权重)
-    0.2 * stability_scores     # 20%权重：交易稳定性
+    (-0.3) * max_drawdowns -   # 30%权重：回撤惩罚 (负权重)
+    0.2 * normalized_frequency     # 20%权重：交易频率惩罚 (负权重)
 )
 
 # 适应度越高的交易员越优秀

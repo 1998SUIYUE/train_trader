@@ -426,7 +426,7 @@ class CudaGPUAcceleratedGA:
         
         # 综合适应度评分
         fitness = (self.config.sharpe_weight * sharpe_ratios - 
-                  self.config.drawdown_weight * max_drawdowns +
+                  self.config.drawdown_weight * max_drawdowns -
                   self.config.stability_weight * normalized_activity)
         
         return fitness
@@ -522,7 +522,7 @@ class CudaGPUAcceleratedGA:
         
         # 综合适应度
         fitness = (self.config.sharpe_weight * sharpe_ratios - 
-                  self.config.drawdown_weight * max_drawdowns_calc +
+                  self.config.drawdown_weight * max_drawdowns_calc -
                   self.config.stability_weight * normalized_frequency)
         
         # 处理NaN和inf值，避免影响遗传算法进程
