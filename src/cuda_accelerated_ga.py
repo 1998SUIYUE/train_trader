@@ -726,7 +726,7 @@ class CudaGPUAcceleratedGA:
                     
                     if should_save_best:
                         best_path = output_dir / f"best_individual_gen_{self.generation}_{save_reason}.npy"
-                        np.save(self.best_individual, self.best_individual)
+                        np.save(best_path, self.best_individual)
                         print(f"💾 已保存最优个体: {best_path.name} (适应度: {self.best_fitness:.4f})")
                 
                 # 定期清理GPU缓存
