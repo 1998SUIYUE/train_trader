@@ -90,7 +90,8 @@ class CudaBacktestOptimizer:
     
     def vectorized_backtest_v3(self, signals: torch.Tensor, returns: torch.Tensor,
                               buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                              max_positions: torch.Tensor, stop_losses: torch.Tensor) -> torch.Tensor:
+                              max_positions: torch.Tensor, stop_losses: torch.Tensor, 
+                              max_drawdowns: torch.Tensor) -> torch.Tensor:
         """
         版本3：完整向量化回测（最精确）
         包含止损、仓位管理等完整功能
@@ -107,6 +108,7 @@ class CudaBacktestOptimizer:
         sell_thresh = sell_thresholds.unsqueeze(1)
         max_pos = max_positions.unsqueeze(1)
         stop_loss = stop_losses.unsqueeze(1)
+        max_dd = max_drawdowns.unsqueeze(1)
         
         # 逐步模拟（仍然向量化）
         for t in range(n_samples):
@@ -122,9 +124,20 @@ class CudaBacktestOptimizer:
             position_value = current_pos * (1 + current_return)
             total_value = current_cash + position_value
             
-            # 交易决策
-            buy_condition = (current_signal > buy_thresh.squeeze(1)) & (current_pos == 0)
-            sell_condition = (current_signal < sell_thresh.squeeze(1)) & (current_pos > 0)
+            # 计算当前回撤
+            if t > 0:
+                # 计算历史最高点
+                historical_values = cash[:, :t+1] + positions[:, :t+1] * torch.cumprod(
+                    1 + returns[:t+1].unsqueeze(0).expand(population_size, -1), dim=1
+                )
+                peak_values = torch.max(historical_values, dim=1)[0]
+                current_drawdown = (peak_values - total_value) / (peak_values + 1e-8)
+            else:
+                current_drawdown = torch.zeros_like(total_value)
+            
+            # 交易决策（包含回撤限制）
+            buy_condition = (current_signal > buy_thresh.squeeze(1)) & (current_pos == 0) & (current_drawdown < max_dd.squeeze(1))
+            sell_condition = (current_signal < sell_thresh.squeeze(1)) & (current_pos > 0) | (current_drawdown > max_dd.squeeze(1))
             
             # 止损条件
             if torch.any(current_pos > 0):
@@ -239,7 +252,8 @@ class CudaBacktestOptimizer:
     
     def benchmark_methods(self, signals: torch.Tensor, returns: torch.Tensor,
                          buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                         max_positions: torch.Tensor, stop_losses: torch.Tensor) -> Dict[str, Any]:
+                         max_positions: torch.Tensor, stop_losses: torch.Tensor,
+                         max_drawdowns: torch.Tensor) -> Dict[str, Any]:
         """基准测试不同回测方法的性能"""
         
         methods = {
@@ -254,7 +268,7 @@ class CudaBacktestOptimizer:
             # 预热GPU
             if name == 'v3_complete':
                 _ = method(signals[:10], returns, buy_thresholds[:10], sell_thresholds[:10], 
-                          max_positions[:10], stop_losses[:10])
+                          max_positions[:10], stop_losses[:10], max_drawdowns[:10])
             else:
                 _ = method(signals[:10], returns, buy_thresholds[:10], sell_thresholds[:10], 
                           max_positions[:10])
@@ -266,7 +280,7 @@ class CudaBacktestOptimizer:
             
             if name == 'v3_complete':
                 fitness = method(signals, returns, buy_thresholds, sell_thresholds, 
-                               max_positions, stop_losses)
+                               max_positions, stop_losses, max_drawdowns)
             else:
                 fitness = method(signals, returns, buy_thresholds, sell_thresholds, max_positions)
             
@@ -308,10 +322,11 @@ def test_cuda_backtest_optimizer():
     sell_thresholds = torch.rand(population_size, device=device) * 0.3 + 0.2
     max_positions = torch.rand(population_size, device=device) * 0.8 + 0.2
     stop_losses = torch.rand(population_size, device=device) * 0.05 + 0.02
+    max_drawdowns = torch.rand(population_size, device=device) * 0.15 + 0.1
     
     # 运行基准测试
     results = optimizer.benchmark_methods(
-        signals, returns, buy_thresholds, sell_thresholds, max_positions, stop_losses
+        signals, returns, buy_thresholds, sell_thresholds, max_positions, stop_losses, max_drawdowns
     )
     
     # 显示结果

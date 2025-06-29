@@ -186,7 +186,7 @@ class CudaGPUAcceleratedGA:
             else:
                 # 高速模式
                 fitness_scores = self.backtest_optimizer.vectorized_backtest_v2(
-                    signals, labels, buy_thresholds, sell_thresholds, max_positions, max_drawdowns
+                    signals, labels, buy_thresholds, sell_thresholds, max_positions
                 )
         else:
             # 使用内置回测方法
