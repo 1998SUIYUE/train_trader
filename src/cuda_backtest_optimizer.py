@@ -94,7 +94,7 @@ def _run_jit_backtest(signals: torch.Tensor, returns: torch.Tensor,
     # 综合适应度
     fitness = 0.5 * sharpe_ratios - 0.3 * max_drawdowns_calc - 0.2 * normalized_trades
     
-    return torch.nan_to_num(fitness, nan=-10.0, posinf=0.0, neginf=-10.0)
+    return torch.nan_to_num(fitness, nan=-10.0, posinf=0.0, neginf=-10.0), sharpe_ratios, max_drawdowns_calc, normalized_trades
 
 class CudaBacktestOptimizer:
     """CUDA优化的回测引擎"""

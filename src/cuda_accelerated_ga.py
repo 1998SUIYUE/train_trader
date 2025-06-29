@@ -267,7 +267,7 @@ class CudaGPUAcceleratedGA:
                                 stop_losses, max_positions, max_drawdowns
                             )
             
-            return fitness_scores
+            return fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades
     
     def _backtest_with_scan(self, signals: torch.Tensor, labels: torch.Tensor,
                            buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
@@ -627,6 +627,9 @@ class CudaGPUAcceleratedGA:
                 'best_fitness': current_best_fitness,
                 'avg_fitness': torch.mean(self.fitness_scores).item(),
                 'std_fitness': torch.std(self.fitness_scores).item(),
+                'avg_sharpe_ratio': torch.mean(sharpe_ratios).item(),
+                'avg_max_drawdown': torch.mean(max_drawdowns_calc).item(),
+                'avg_trade_frequency': torch.mean(normalized_trades).item(),
                 'generation_time': generation_time,
                 'no_improvement_count': self.no_improvement_count
             }

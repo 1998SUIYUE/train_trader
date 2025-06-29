@@ -107,7 +107,10 @@ class TrainingProgressMonitor:
             'generation_time': generation_time,
             'no_improvement': no_improvement,
             'improved': improved,
-            'total_time': time.time() - self.start_time if self.start_time else 0
+            'total_time': time.time() - self.start_time if self.start_time else 0,
+            'avg_sharpe_ratio': stats.get('avg_sharpe_ratio', 0),
+            'avg_max_drawdown': stats.get('avg_max_drawdown', 0),
+            'avg_trade_frequency': stats.get('avg_trade_frequency', 0)
         }
         
         # 发送到显示线程
@@ -161,7 +164,9 @@ class TrainingProgressMonitor:
         print(f"\r{improvement_indicator} 代数 {generation:4d} {progress_info} | "
               f"最佳: {best_fitness:8.6f} | "
               f"平均: {avg_fitness:8.6f} | "
-              f"标准差: {std_fitness:7.6f} | "
+              f"夏普: {info['avg_sharpe_ratio']:7.4f} | "
+              f"回撤: {info['avg_max_drawdown']:7.4f} | "
+              f"频率: {info['avg_trade_frequency']:7.4f} | "
               f"无改进: {no_improvement:3d} | "
               f"时间: {generation_time:6.3f}s", end="")
         
@@ -340,6 +345,9 @@ class SimpleProgressDisplay:
         print(f"{indicator} Gen {generation:4d} | "
               f"Best: {best_fitness:8.6f} | "
               f"Avg: {avg_fitness:8.6f} | "
+              f"Sharpe: {stats.get('avg_sharpe_ratio', 0):7.4f} | "
+              f"Drawdown: {stats.get('avg_max_drawdown', 0):7.4f} | "
+              f"Freq: {stats.get('avg_trade_frequency', 0):7.4f} | "
               f"NoImpr: {no_improvement:3d} | "
               f"Time: {generation_time:6.3f}s | "
               f"Total: {total_time/60:.1f}m")
