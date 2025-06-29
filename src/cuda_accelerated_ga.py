@@ -26,6 +26,20 @@ try:
 except ImportError:
     PROGRESS_MONITOR_AVAILABLE = False
 
+try:
+    from performance_profiler import get_profiler, timer
+    PERFORMANCE_PROFILER_AVAILABLE = True
+except ImportError:
+    PERFORMANCE_PROFILER_AVAILABLE = False
+    # 创建空的上下文管理器
+    class timer:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+
 
 @dataclass
 class CudaGAConfig:
@@ -115,38 +129,42 @@ class CudaGPUAcceleratedGA:
         Args:
             seed: 随机种子
         """
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-        
-        print("初始化种群...")
-        
-        # 在GPU上创建种群
-        # 每个个体包含: [权重(feature_dim), 偏置, 买入阈值, 卖出阈值, 止损, 最大仓位, 最大回撤]
-        individual_size = self.config.feature_dim + 6
-        
-        self.population = torch.randn(
-            self.config.population_size, 
-            individual_size,
-            device=self.device,
-            dtype=torch.float32
-        )
-        
-        # 初始化权重部分 (前feature_dim个参数)
-        self.population[:, :self.config.feature_dim] *= 0.1
-        
-        # 初始化其他参数
-        self.population[:, self.config.feature_dim] = torch.randn(self.config.population_size, device=self.device) * 0.1  # 偏置
-        self.population[:, self.config.feature_dim + 1] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.55  # 买入阈值 [0.55, 0.8]
-        self.population[:, self.config.feature_dim + 2] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.2   # 卖出阈值 [0.2, 0.45]
-        self.population[:, self.config.feature_dim + 3] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.06 + 0.02  # 止损 [0.02, 0.08]
-        self.population[:, self.config.feature_dim + 4] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.5 + 0.5   # 最大仓位 [0.5, 1.0]
-        self.population[:, self.config.feature_dim + 5] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.15 + 0.1  # 最大回撤 [0.1, 0.25]
-        
-        # 初始化适应度分数
-        self.fitness_scores = torch.zeros(self.config.population_size, device=self.device)
-        
-        print(f"种群初始化完成: {self.population.shape}")
+        with timer("initialize_population", "ga"):
+            if seed is not None:
+                torch.manual_seed(seed)
+                np.random.seed(seed)
+            
+            print("初始化种群...")
+            
+            # 在GPU上创建种群
+            # 每个个体包含: [权重(feature_dim), 偏置, 买入阈值, 卖出阈值, 止损, 最大仓位, 最大回撤]
+            individual_size = self.config.feature_dim + 6
+            
+            with timer("create_population_tensor", "ga"):
+                self.population = torch.randn(
+                    self.config.population_size, 
+                    individual_size,
+                    device=self.device,
+                    dtype=torch.float32
+                )
+            
+            with timer("initialize_weights", "ga"):
+                # 初始化权重部分 (前feature_dim个参数)
+                self.population[:, :self.config.feature_dim] *= 0.1
+            
+            with timer("initialize_trading_params", "ga"):
+                # 初始化其他参数
+                self.population[:, self.config.feature_dim] = torch.randn(self.config.population_size, device=self.device) * 0.1  # 偏置
+                self.population[:, self.config.feature_dim + 1] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.55  # 买入阈值 [0.55, 0.8]
+                self.population[:, self.config.feature_dim + 2] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.2   # 卖出阈值 [0.2, 0.45]
+                self.population[:, self.config.feature_dim + 3] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.06 + 0.02  # 止损 [0.02, 0.08]
+                self.population[:, self.config.feature_dim + 4] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.5 + 0.5   # 最大仓位 [0.5, 1.0]
+                self.population[:, self.config.feature_dim + 5] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.15 + 0.1  # 最大回撤 [0.1, 0.25]
+            
+            # 初始化适应度分数
+            self.fitness_scores = torch.zeros(self.config.population_size, device=self.device)
+            
+            print(f"种群初始化完成: {self.population.shape}")
     
     def evaluate_fitness_batch(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """
@@ -159,49 +177,57 @@ class CudaGPUAcceleratedGA:
         Returns:
             适应度分数 [population_size]
         """
-        n_samples = features.shape[0]
-        population_size = self.population.shape[0]
-        
-        # 提取个体参数
-        weights = self.population[:, :self.config.feature_dim]  # [pop_size, feature_dim]
-        biases = self.population[:, self.config.feature_dim]    # [pop_size]
-        buy_thresholds = self.population[:, self.config.feature_dim + 1]   # [pop_size]
-        sell_thresholds = self.population[:, self.config.feature_dim + 2]  # [pop_size]
-        stop_losses = self.population[:, self.config.feature_dim + 3]      # [pop_size]
-        max_positions = self.population[:, self.config.feature_dim + 4]    # [pop_size]
-        max_drawdowns = self.population[:, self.config.feature_dim + 5]    # [pop_size]
-        
-        # 计算预测信号 [pop_size, n_samples]
-        signals = torch.sigmoid(torch.matmul(weights, features.T) + biases.unsqueeze(1))
-        
-        # 使用CUDA优化的向量化回测
-        if self.backtest_optimizer is not None:
-            # 使用专门的CUDA回测优化器
-            if self.config.use_torch_scan:
-                # 高精度模式
-                fitness_scores = self.backtest_optimizer.vectorized_backtest_v3(
-                    signals, labels, buy_thresholds, sell_thresholds, 
-                    max_positions, stop_losses, max_drawdowns
-                )
-            else:
-                # 高速模式
-                fitness_scores = self.backtest_optimizer.vectorized_backtest_v2(
-                    signals, labels, buy_thresholds, sell_thresholds, max_positions
-                )
-        else:
-            # 使用内置回测方法
-            if self.config.use_torch_scan:
-                fitness_scores = self._advanced_vectorized_backtest(
-                    signals, labels, buy_thresholds, sell_thresholds, 
-                    stop_losses, max_positions, max_drawdowns
-                )
-            else:
-                fitness_scores = self._vectorized_backtest(
-                    signals, labels, buy_thresholds, sell_thresholds,
-                    stop_losses, max_positions, max_drawdowns
-                )
-        
-        return fitness_scores
+        with timer("evaluate_fitness_batch", "ga"):
+            n_samples = features.shape[0]
+            population_size = self.population.shape[0]
+            
+            with timer("extract_parameters", "ga"):
+                # 提取个体参数
+                weights = self.population[:, :self.config.feature_dim]  # [pop_size, feature_dim]
+                biases = self.population[:, self.config.feature_dim]    # [pop_size]
+                buy_thresholds = self.population[:, self.config.feature_dim + 1]   # [pop_size]
+                sell_thresholds = self.population[:, self.config.feature_dim + 2]  # [pop_size]
+                stop_losses = self.population[:, self.config.feature_dim + 3]      # [pop_size]
+                max_positions = self.population[:, self.config.feature_dim + 4]    # [pop_size]
+                max_drawdowns = self.population[:, self.config.feature_dim + 5]    # [pop_size]
+            
+            with timer("compute_signals", "ga"):
+                # 计算预测信号 [pop_size, n_samples]
+                signals = torch.sigmoid(torch.matmul(weights, features.T) + biases.unsqueeze(1))
+            
+            with timer("backtest", "ga"):
+                # 使用CUDA优化的向量化回测
+                if self.backtest_optimizer is not None:
+                    # 使用专门的CUDA回测优化器
+                    if self.config.use_torch_scan:
+                        with timer("backtest_v3", "backtest"):
+                            # 高精度模式
+                            fitness_scores = self.backtest_optimizer.vectorized_backtest_v3(
+                                signals, labels, buy_thresholds, sell_thresholds, 
+                                max_positions, stop_losses, max_drawdowns
+                            )
+                    else:
+                        with timer("backtest_v2", "backtest"):
+                            # 高速模式
+                            fitness_scores = self.backtest_optimizer.vectorized_backtest_v2(
+                                signals, labels, buy_thresholds, sell_thresholds, max_positions
+                            )
+                else:
+                    # 使用内置回测方法
+                    if self.config.use_torch_scan:
+                        with timer("advanced_vectorized_backtest", "backtest"):
+                            fitness_scores = self._advanced_vectorized_backtest(
+                                signals, labels, buy_thresholds, sell_thresholds, 
+                                stop_losses, max_positions, max_drawdowns
+                            )
+                    else:
+                        with timer("vectorized_backtest", "backtest"):
+                            fitness_scores = self._vectorized_backtest(
+                                signals, labels, buy_thresholds, sell_thresholds,
+                                stop_losses, max_positions, max_drawdowns
+                            )
+            
+            return fitness_scores
     
     def _backtest_with_scan(self, signals: torch.Tensor, labels: torch.Tensor,
                            buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
@@ -452,116 +478,125 @@ class CudaGPUAcceleratedGA:
     
     def selection(self) -> torch.Tensor:
         """选择操作 - 锦标赛选择"""
-        tournament_size = max(2, self.config.population_size // 20)
-        selected_indices = torch.zeros(self.config.population_size, dtype=torch.long, device=self.device)
-        
-        for i in range(self.config.population_size):
-            # 随机选择锦标赛参与者
-            tournament_indices = torch.randint(
-                0, self.config.population_size, (tournament_size,), device=self.device
-            )
-            tournament_fitness = self.fitness_scores[tournament_indices]
+        with timer("selection", "ga"):
+            tournament_size = max(2, self.config.population_size // 20)
+            selected_indices = torch.zeros(self.config.population_size, dtype=torch.long, device=self.device)
             
-            # 选择最佳个体
-            winner_idx = tournament_indices[torch.argmax(tournament_fitness)]
-            selected_indices[i] = winner_idx
-        
-        return self.population[selected_indices]
+            for i in range(self.config.population_size):
+                # 随机选择锦标赛参与者
+                tournament_indices = torch.randint(
+                    0, self.config.population_size, (tournament_size,), device=self.device
+                )
+                tournament_fitness = self.fitness_scores[tournament_indices]
+                
+                # 选择最佳个体
+                winner_idx = tournament_indices[torch.argmax(tournament_fitness)]
+                selected_indices[i] = winner_idx
+            
+            return self.population[selected_indices]
     
     def crossover(self, parents: torch.Tensor) -> torch.Tensor:
         """交叉操作 - 均匀交叉"""
-        population_size, individual_size = parents.shape
-        offspring = parents.clone()
-        
-        # 随机配对
-        pairs = torch.randperm(population_size, device=self.device).view(-1, 2)
-        
-        for i in range(0, len(pairs), 2):
-            if i + 1 < len(pairs):
-                parent1_idx, parent2_idx = pairs[i], pairs[i + 1]
-                
-                if torch.rand(1, device=self.device) < self.config.crossover_rate:
-                    # 均匀交叉
-                    mask = torch.rand(individual_size, device=self.device) < 0.5
+        with timer("crossover", "ga"):
+            population_size, individual_size = parents.shape
+            offspring = parents.clone()
+            
+            # 随机配对
+            pairs = torch.randperm(population_size, device=self.device).view(-1, 2)
+            
+            for i in range(0, len(pairs), 2):
+                if i + 1 < len(pairs):
+                    parent1_idx, parent2_idx = pairs[i], pairs[i + 1]
                     
-                    temp = offspring[parent1_idx].clone()
-                    offspring[parent1_idx] = torch.where(mask, offspring[parent2_idx], offspring[parent1_idx])
-                    offspring[parent2_idx] = torch.where(mask, temp, offspring[parent2_idx])
-        
-        return offspring
+                    if torch.rand(1, device=self.device) < self.config.crossover_rate:
+                        # 均匀交叉
+                        mask = torch.rand(individual_size, device=self.device) < 0.5
+                        
+                        temp = offspring[parent1_idx].clone()
+                        offspring[parent1_idx] = torch.where(mask, offspring[parent2_idx], offspring[parent1_idx])
+                        offspring[parent2_idx] = torch.where(mask, temp, offspring[parent2_idx])
+            
+            return offspring
     
     def mutation(self, population: torch.Tensor) -> torch.Tensor:
         """变异操作"""
-        population_size, individual_size = population.shape
-        mutated = population.clone()
-        
-        # 权重变异
-        weight_mask = torch.rand(population_size, self.config.feature_dim, device=self.device) < self.config.mutation_rate
-        weight_noise = torch.randn(population_size, self.config.feature_dim, device=self.device) * 0.01
-        mutated[:, :self.config.feature_dim] += weight_mask * weight_noise
-        
-        # 其他参数变异
-        param_mask = torch.rand(population_size, 6, device=self.device) < self.config.mutation_rate
-        param_noise = torch.randn(population_size, 6, device=self.device) * 0.01
-        
-        # 确保参数在合理范围内
-        mutated[:, self.config.feature_dim:] += param_mask * param_noise
-        mutated[:, self.config.feature_dim + 1] = torch.clamp(mutated[:, self.config.feature_dim + 1], 0.55, 0.8)  # 买入阈值
-        mutated[:, self.config.feature_dim + 2] = torch.clamp(mutated[:, self.config.feature_dim + 2], 0.2, 0.45)  # 卖出阈值
-        mutated[:, self.config.feature_dim + 3] = torch.clamp(mutated[:, self.config.feature_dim + 3], 0.02, 0.08)  # 止损
-        mutated[:, self.config.feature_dim + 4] = torch.clamp(mutated[:, self.config.feature_dim + 4], 0.5, 1.0)  # 最大仓位
-        mutated[:, self.config.feature_dim + 5] = torch.clamp(mutated[:, self.config.feature_dim + 5], 0.1, 0.25)  # 最大回撤
-        
-        return mutated
+        with timer("mutation", "ga"):
+            population_size, individual_size = population.shape
+            mutated = population.clone()
+            
+            with timer("weight_mutation", "ga"):
+                # 权重变异
+                weight_mask = torch.rand(population_size, self.config.feature_dim, device=self.device) < self.config.mutation_rate
+                weight_noise = torch.randn(population_size, self.config.feature_dim, device=self.device) * 0.01
+                mutated[:, :self.config.feature_dim] += weight_mask * weight_noise
+            
+            with timer("param_mutation", "ga"):
+                # 其他参数变异
+                param_mask = torch.rand(population_size, 6, device=self.device) < self.config.mutation_rate
+                param_noise = torch.randn(population_size, 6, device=self.device) * 0.01
+                
+                # 确保参数在合理范围内
+                mutated[:, self.config.feature_dim:] += param_mask * param_noise
+                mutated[:, self.config.feature_dim + 1] = torch.clamp(mutated[:, self.config.feature_dim + 1], 0.55, 0.8)  # 买入阈值
+                mutated[:, self.config.feature_dim + 2] = torch.clamp(mutated[:, self.config.feature_dim + 2], 0.2, 0.45)  # 卖出阈值
+                mutated[:, self.config.feature_dim + 3] = torch.clamp(mutated[:, self.config.feature_dim + 3], 0.02, 0.08)  # 止损
+                mutated[:, self.config.feature_dim + 4] = torch.clamp(mutated[:, self.config.feature_dim + 4], 0.5, 1.0)  # 最大仓位
+                mutated[:, self.config.feature_dim + 5] = torch.clamp(mutated[:, self.config.feature_dim + 5], 0.1, 0.25)  # 最大回撤
+            
+            return mutated
     
     def evolve_one_generation(self, features: torch.Tensor, labels: torch.Tensor) -> Dict[str, float]:
         """进化一代"""
-        start_time = time.time()
-        
-        # 评估适应度
-        self.fitness_scores = self.evaluate_fitness_batch(features, labels)
-        
-        # 记录最佳个体
-        best_idx = torch.argmax(self.fitness_scores)
-        current_best_fitness = self.fitness_scores[best_idx].item()
-        
-        if current_best_fitness > self.best_fitness:
-            self.best_fitness = current_best_fitness
-            self.best_individual = self.gpu_manager.to_cpu(self.population[best_idx])
-            self.no_improvement_count = 0
-        else:
-            self.no_improvement_count += 1
-        
-        # 精英保留
-        elite_size = int(self.config.population_size * self.config.elite_ratio)
-        elite_indices = torch.topk(self.fitness_scores, elite_size).indices
-        elite_population = self.population[elite_indices]
-        
-        # 选择、交叉、变异
-        selected = self.selection()
-        offspring = self.crossover(selected)
-        mutated = self.mutation(offspring)
-        
-        # 新种群 = 精英 + 变异后代
-        new_population = torch.cat([elite_population, mutated[elite_size:]], dim=0)
-        self.population = new_population
-        
-        self.generation += 1
-        generation_time = time.time() - start_time
-        
-        # 记录历史
-        stats = {
-            'generation': self.generation,
-            'best_fitness': current_best_fitness,
-            'avg_fitness': torch.mean(self.fitness_scores).item(),
-            'std_fitness': torch.std(self.fitness_scores).item(),
-            'generation_time': generation_time,
-            'no_improvement_count': self.no_improvement_count
-        }
-        
-        self.fitness_history.append(stats)
-        
-        return stats
+        with timer("evolve_one_generation", "ga"):
+            start_time = time.time()
+            
+            # 评估适应度
+            self.fitness_scores = self.evaluate_fitness_batch(features, labels)
+            
+            with timer("update_best_individual", "ga"):
+                # 记录最佳个体
+                best_idx = torch.argmax(self.fitness_scores)
+                current_best_fitness = self.fitness_scores[best_idx].item()
+                
+                if current_best_fitness > self.best_fitness:
+                    self.best_fitness = current_best_fitness
+                    self.best_individual = self.gpu_manager.to_cpu(self.population[best_idx])
+                    self.no_improvement_count = 0
+                else:
+                    self.no_improvement_count += 1
+            
+            with timer("elite_selection", "ga"):
+                # 精英保留
+                elite_size = int(self.config.population_size * self.config.elite_ratio)
+                elite_indices = torch.topk(self.fitness_scores, elite_size).indices
+                elite_population = self.population[elite_indices]
+            
+            # 选择、交叉、变异
+            selected = self.selection()
+            offspring = self.crossover(selected)
+            mutated = self.mutation(offspring)
+            
+            with timer("population_replacement", "ga"):
+                # 新种群 = 精英 + 变异后代
+                new_population = torch.cat([elite_population, mutated[elite_size:]], dim=0)
+                self.population = new_population
+            
+            self.generation += 1
+            generation_time = time.time() - start_time
+            
+            # 记录历史
+            stats = {
+                'generation': self.generation,
+                'best_fitness': current_best_fitness,
+                'avg_fitness': torch.mean(self.fitness_scores).item(),
+                'std_fitness': torch.std(self.fitness_scores).item(),
+                'generation_time': generation_time,
+                'no_improvement_count': self.no_improvement_count
+            }
+            
+            self.fitness_history.append(stats)
+            
+            return stats
     
     def evolve(self, features: torch.Tensor, labels: torch.Tensor,
                save_checkpoints: bool = True,
