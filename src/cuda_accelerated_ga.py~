@@ -160,7 +160,7 @@ class CudaGPUAcceleratedGA:
                 self.population[:, self.config.feature_dim + 3] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.06 + 0.02  # 止损 [0.02, 0.08]
                 self.population[:, self.config.feature_dim + 4] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.5 + 0.5   # 最大仓位 [0.5, 1.0]
                 self.population[:, self.config.feature_dim + 5] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.15 + 0.1  # 最大回撤 [0.1, 0.25]
-                self.population[:, self.config.feature_dim + 6] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.8 + 0.01   # 交易仓位 [0.2, 1.0]
+                self.population[:, self.config.feature_dim + 6] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.8 + 0.2   # 交易仓位 [0.2, 1.0]
             
             # 初始化适应度分数
             self.fitness_scores = torch.zeros(self.config.population_size, device=self.device)
@@ -220,20 +220,21 @@ class CudaGPUAcceleratedGA:
                         with timer("advanced_vectorized_backtest", "backtest"):
                             fitness_scores = self._advanced_vectorized_backtest(
                                 signals, labels, buy_thresholds, sell_thresholds, 
-                                stop_losses, max_positions, max_drawdowns
+                                stop_losses, max_positions, max_drawdowns, trade_positions
                             )
                     else:
                         with timer("vectorized_backtest", "backtest"):
                             fitness_scores = self._vectorized_backtest(
                                 signals, labels, buy_thresholds, sell_thresholds,
-                                stop_losses, max_positions, max_drawdowns
+                                stop_losses, max_positions, max_drawdowns, trade_positions
                             )
             
             return fitness_scores
     
     def _backtest_with_scan(self, signals: torch.Tensor, labels: torch.Tensor,
                            buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
+                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor, 
+                           trade_positions: torch.Tensor) -> torch.Tensor:
         """使用torch.scan的优化回测"""
         population_size, n_samples = signals.shape
         
@@ -267,10 +268,11 @@ class CudaGPUAcceleratedGA:
                 stop_loss_signal = (current_loss < -stop_losses.unsqueeze(1)) & (state['position'] > 0)
                 sell_signal = sell_signal | stop_loss_signal
             
-            # 执行买入
+            # 执行买入 - 使用交易仓位和最大仓位的最小值
+            actual_position_ratio = torch.min(trade_positions, max_positions)
             new_position = torch.where(
                 buy_signal.squeeze(),
-                torch.clamp(max_positions * new_portfolio_value, 0, new_portfolio_value),
+                torch.clamp(actual_position_ratio * new_portfolio_value, 0, new_portfolio_value),
                 state['position']
             )
             new_cash = torch.where(
@@ -339,7 +341,8 @@ class CudaGPUAcceleratedGA:
     
     def _vectorized_backtest(self, signals: torch.Tensor, labels: torch.Tensor,
                            buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
+                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor,
+                           trade_positions: torch.Tensor) -> torch.Tensor:
         """完全向量化的CUDA回测实现"""
         population_size, n_samples = signals.shape
         
@@ -349,6 +352,7 @@ class CudaGPUAcceleratedGA:
         stop_losses = stop_losses.unsqueeze(1)  # [pop_size, 1]
         max_positions = max_positions.unsqueeze(1)  # [pop_size, 1]
         max_drawdowns = max_drawdowns.unsqueeze(1)  # [pop_size, 1]
+        trade_positions = trade_positions.unsqueeze(1)  # [pop_size, 1]
         
         # 生成交易信号矩阵
         buy_signals = (signals > buy_thresholds).float()  # [pop_size, n_samples]
@@ -360,8 +364,9 @@ class CudaGPUAcceleratedGA:
         # 简化的交易模拟：使用信号强度作为权重
         signal_strength = torch.sigmoid((signals - 0.5) * 4)  # 将信号映射到[0,1]
         
-        # 计算每个时间点的仓位（基于信号强度）
-        positions = signal_strength * max_positions.squeeze(1).unsqueeze(1)
+        # 计算每个时间点的仓位（基于信号强度和交易仓位）
+        actual_position_ratio = torch.min(trade_positions.squeeze(1), max_positions.squeeze(1))
+        positions = signal_strength * actual_position_ratio.unsqueeze(1)
         
         # 计算每个时间点的收益
         period_returns = labels.unsqueeze(0).expand(population_size, -1)
@@ -395,8 +400,9 @@ class CudaGPUAcceleratedGA:
     
     def _advanced_vectorized_backtest(self, signals: torch.Tensor, labels: torch.Tensor,
                                      buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                                     stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
-        """高级CUDA向量化回测，更精确的交易模拟（已修复止损逻辑）"""
+                                     stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor,
+                                     trade_positions: torch.Tensor) -> torch.Tensor:
+        """高级CUDA向量化回测，更精确的交易模拟"""
         population_size, n_samples = signals.shape
         
         # 扩展维度
@@ -404,7 +410,8 @@ class CudaGPUAcceleratedGA:
         sell_thresholds = sell_thresholds.unsqueeze(1)
         stop_losses = stop_losses.unsqueeze(1)
         max_positions = max_positions.unsqueeze(1)
-        max_drawdowns_param = max_drawdowns.unsqueeze(1) # 重命名以避免与计算出的最大回撤变量冲突
+        max_drawdowns = max_drawdowns.unsqueeze(1)
+        trade_positions = trade_positions.unsqueeze(1)
         
         # 生成交易决策矩阵
         buy_signals = (signals > buy_thresholds).float()
@@ -413,49 +420,39 @@ class CudaGPUAcceleratedGA:
         # 初始化状态矩阵
         positions = torch.zeros(population_size, n_samples + 1, device=self.device)
         portfolio_values = torch.ones(population_size, n_samples + 1, device=self.device)
-        entry_prices = torch.zeros(population_size, device=self.device) # 简化：只跟踪当前持仓的入场价
-
-        # 模拟价格序列，用于止损计算
-        # 从1开始累积乘以(1+return)
-        prices = torch.cat([torch.ones(1, device=self.device), 1 + labels]).cumprod(0)
-
+        
         # 向量化交易模拟
         for t in range(n_samples):
             current_return = labels[t]
-            # t时刻的价格代表t-1到t的变化后的价格
-            current_price = prices[t+1]
-
+            
             # 当前仓位状态
             current_positions = positions[:, t]
             current_values = portfolio_values[:, t]
             
-            # 更新投资组合价值（基于前一天的价值和今天的持仓收益）
+            # 更新投资组合价值（考虑持仓收益）
             updated_values = current_values * (1 + current_positions * current_return)
             
             # 计算当前最高点和回撤
-            # 使用更新后的价值来计算当日回撤
-            running_max = torch.maximum(portfolio_values[:, :t+1].max(dim=1)[0], updated_values)
-            current_drawdown = (running_max - updated_values) / (running_max + 1e-8)
+            if t == 0:
+                current_max = updated_values
+            else:
+                current_max = torch.maximum(portfolio_values[:, :t+1].max(dim=1)[0], updated_values)
+            current_drawdown = (current_max - updated_values) / (current_max + 1e-8)
             
-            # 止损决策 (核心修复)
-            # 当持有仓位时，检查当前价格是否低于入场价格的一定比例
-            stop_loss_triggered = (current_positions > 0) & (entry_prices > 0) & (current_price < entry_prices * (1 - stop_losses.squeeze(1)))
-
-            # 交易决策（包含最大回撤限制和止损）
-            can_buy = (current_positions == 0) & (buy_signals[:, t] == 1) & (current_drawdown < max_drawdowns_param.squeeze(1))
-            can_sell = (current_positions > 0) & ((sell_signals[:, t] == 1) | stop_loss_triggered | (current_drawdown > max_drawdowns_param.squeeze(1)))
+            # 交易决策（包含最大回撤限制）
+            can_buy = (current_positions == 0) & (buy_signals[:, t] == 1) & (current_drawdown < max_drawdowns.squeeze(1))
+            can_sell = (current_positions > 0) & (sell_signals[:, t] == 1) | (current_drawdown > max_drawdowns.squeeze(1))
             
             # 执行交易
             new_positions = current_positions.clone()
             
-            # 买入：设置仓位并记录入场价格
-            buy_position = max_positions.squeeze(1)
+            # 买入：设置仓位 - 使用交易仓位和最大仓位的最小值
+            actual_position_ratio = torch.min(trade_positions.squeeze(1), max_positions.squeeze(1))
+            buy_position = actual_position_ratio * can_buy.float()
             new_positions = torch.where(can_buy, buy_position, new_positions)
-            entry_prices = torch.where(can_buy, current_price, entry_prices)
-
-            # 卖出：清空仓位和入场价格
+            
+            # 卖出：清空仓位
             new_positions = torch.where(can_sell, torch.zeros_like(new_positions), new_positions)
-            entry_prices = torch.where(can_sell, torch.zeros_like(entry_prices), entry_prices)
             
             # 更新状态
             positions[:, t + 1] = new_positions
@@ -465,7 +462,7 @@ class CudaGPUAcceleratedGA:
         final_values = portfolio_values[:, -1]
         
         # 计算收益序列
-        returns = torch.diff(portfolio_values, dim=1) / (portfolio_values[:, :-1] + 1e-8)
+        returns = torch.diff(portfolio_values, dim=1) / portfolio_values[:, :-1]
         
         # 夏普比率
         mean_returns = torch.mean(returns, dim=1)
@@ -473,9 +470,9 @@ class CudaGPUAcceleratedGA:
         sharpe_ratios = mean_returns / std_returns
         
         # 最大回撤
-        running_max_final = torch.cummax(portfolio_values, dim=1)[0]
-        drawdowns_final = (running_max_final - portfolio_values) / (running_max_final + 1e-8)
-        max_drawdowns_calc = torch.max(drawdowns_final, dim=1)[0]
+        running_max = torch.cummax(portfolio_values, dim=1)[0]
+        drawdowns = (running_max - portfolio_values) / (running_max + 1e-8)
+        max_drawdowns = torch.max(drawdowns, dim=1)[0]
         
         # 交易频率
         position_changes = torch.abs(torch.diff(positions, dim=1))
@@ -484,11 +481,8 @@ class CudaGPUAcceleratedGA:
         
         # 综合适应度
         fitness = (self.config.sharpe_weight * sharpe_ratios - 
-                  self.config.drawdown_weight * max_drawdowns_calc +
+                  self.config.drawdown_weight * max_drawdowns +
                   self.config.stability_weight * normalized_frequency)
-        
-        # 处理NaN和inf值，避免影响遗传算法进程
-        fitness = torch.nan_to_num(fitness, nan=-10.0, posinf=0.0, neginf=-10.0)
         
         return fitness
     
