@@ -578,7 +578,7 @@ class CudaGPUAcceleratedGA:
             start_time = time.time()
             
             # 评估适应度
-            self.fitness_scores = self.evaluate_fitness_batch(features, labels)
+            self.fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self.evaluate_fitness_batch(features, labels)
             
             with timer("update_best_individual", "ga"):
                 # 记录最佳个体
