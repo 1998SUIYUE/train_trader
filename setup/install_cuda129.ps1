@@ -1,97 +1,97 @@
-# CUDA 12.9环境安装脚本
-# 适用于Windows系统和NVIDIA GPU
+# CUDA 12.9 Environment Setup Script
+# For Windows systems with NVIDIA GPU
 
-Write-Host "=== CUDA 12.9 环境安装脚本 ===" -ForegroundColor Green
-Write-Host "此脚本将为您安装适用于CUDA 12.9的PyTorch和相关依赖" -ForegroundColor Yellow
+Write-Host "=== CUDA 12.9 Environment Setup Script ===" -ForegroundColor Green
+Write-Host "This script will install PyTorch and dependencies for CUDA 12.9" -ForegroundColor Yellow
 
-# 检查Python版本
-Write-Host "`n检查Python版本..." -ForegroundColor Cyan
+# Check Python version
+Write-Host "`nChecking Python version..." -ForegroundColor Cyan
 $pythonVersion = python --version 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ Python未安装或不在PATH中" -ForegroundColor Red
-    Write-Host "请先安装Python 3.8或更高版本" -ForegroundColor Yellow
+    Write-Host "ERROR: Python not installed or not in PATH" -ForegroundColor Red
+    Write-Host "Please install Python 3.8 or higher first" -ForegroundColor Yellow
     exit 1
 }
-Write-Host "✅ $pythonVersion" -ForegroundColor Green
+Write-Host "SUCCESS: $pythonVersion" -ForegroundColor Green
 
-# 检查pip
-Write-Host "`n检查pip..." -ForegroundColor Cyan
+# Check pip
+Write-Host "`nChecking pip..." -ForegroundColor Cyan
 $pipVersion = pip --version 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ pip未安装" -ForegroundColor Red
+    Write-Host "ERROR: pip not installed" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ $pipVersion" -ForegroundColor Green
+Write-Host "SUCCESS: $pipVersion" -ForegroundColor Green
 
-# 检查NVIDIA GPU
-Write-Host "`n检查NVIDIA GPU..." -ForegroundColor Cyan
+# Check NVIDIA GPU
+Write-Host "`nChecking NVIDIA GPU..." -ForegroundColor Cyan
 try {
     $gpuInfo = nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>&1
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "✅ 检测到NVIDIA GPU:" -ForegroundColor Green
+        Write-Host "SUCCESS: NVIDIA GPU detected:" -ForegroundColor Green
         $gpuInfo | ForEach-Object { Write-Host "   $_" -ForegroundColor White }
     } else {
-        Write-Host "⚠️  无法检测到NVIDIA GPU或nvidia-smi不可用" -ForegroundColor Yellow
-        Write-Host "   请确保已安装NVIDIA驱动程序" -ForegroundColor Yellow
+        Write-Host "WARNING: Cannot detect NVIDIA GPU or nvidia-smi unavailable" -ForegroundColor Yellow
+        Write-Host "   Please ensure NVIDIA drivers are installed" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "⚠️  无法检测GPU信息" -ForegroundColor Yellow
+    Write-Host "WARNING: Cannot detect GPU information" -ForegroundColor Yellow
 }
 
-# 检查CUDA版本
-Write-Host "`n检查CUDA版本..." -ForegroundColor Cyan
+# Check CUDA version
+Write-Host "`nChecking CUDA version..." -ForegroundColor Cyan
 try {
     $cudaVersion = nvcc --version 2>&1
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "✅ CUDA已安装:" -ForegroundColor Green
+        Write-Host "SUCCESS: CUDA installed:" -ForegroundColor Green
         $cudaVersion | Select-String "release" | ForEach-Object { Write-Host "   $_" -ForegroundColor White }
     } else {
-        Write-Host "⚠️  CUDA未安装或nvcc不在PATH中" -ForegroundColor Yellow
-        Write-Host "   建议安装CUDA 12.1或更高版本" -ForegroundColor Yellow
+        Write-Host "WARNING: CUDA not installed or nvcc not in PATH" -ForegroundColor Yellow
+        Write-Host "   Recommend installing CUDA 12.1 or higher" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "⚠️  无法检测CUDA版本" -ForegroundColor Yellow
+    Write-Host "WARNING: Cannot detect CUDA version" -ForegroundColor Yellow
 }
 
-# 询问是否继续
-Write-Host "`n是否继续安装PyTorch和依赖包？" -ForegroundColor Yellow
-$continue = Read-Host "输入 'y' 继续，其他键退出"
+# Ask to continue
+Write-Host "`nDo you want to continue installing PyTorch and dependencies?" -ForegroundColor Yellow
+$continue = Read-Host "Enter 'y' to continue, any other key to exit"
 if ($continue -ne 'y' -and $continue -ne 'Y') {
-    Write-Host "安装已取消" -ForegroundColor Yellow
+    Write-Host "Installation cancelled" -ForegroundColor Yellow
     exit 0
 }
 
-# 升级pip
-Write-Host "`n升级pip..." -ForegroundColor Cyan
+# Upgrade pip
+Write-Host "`nUpgrading pip..." -ForegroundColor Cyan
 python -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ pip升级失败" -ForegroundColor Red
+    Write-Host "ERROR: Failed to upgrade pip" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ pip升级完成" -ForegroundColor Green
+Write-Host "SUCCESS: pip upgraded" -ForegroundColor Green
 
-# 安装PyTorch (CUDA 12.1版本，兼容CUDA 12.9)
-Write-Host "`n安装PyTorch (CUDA版本)..." -ForegroundColor Cyan
-Write-Host "正在安装适用于CUDA 12.1的PyTorch (兼容CUDA 12.9)..." -ForegroundColor Yellow
+# Install PyTorch (CUDA 12.1 version, compatible with CUDA 12.9)
+Write-Host "`nInstalling PyTorch (CUDA version)..." -ForegroundColor Cyan
+Write-Host "Installing PyTorch for CUDA 12.1 (compatible with CUDA 12.9)..." -ForegroundColor Yellow
 
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ PyTorch安装失败" -ForegroundColor Red
-    Write-Host "尝试使用备用安装方法..." -ForegroundColor Yellow
+    Write-Host "ERROR: PyTorch installation failed" -ForegroundColor Red
+    Write-Host "Trying alternative installation method..." -ForegroundColor Yellow
     
-    # 备用方法：使用conda
-    Write-Host "尝试使用conda安装..." -ForegroundColor Cyan
+    # Alternative method: use conda
+    Write-Host "Trying conda installation..." -ForegroundColor Cyan
     conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "❌ conda安装也失败，请手动安装PyTorch" -ForegroundColor Red
-        Write-Host "访问 https://pytorch.org/get-started/locally/ 获取安装指令" -ForegroundColor Yellow
+        Write-Host "ERROR: conda installation also failed, please install PyTorch manually" -ForegroundColor Red
+        Write-Host "Visit https://pytorch.org/get-started/locally/ for installation instructions" -ForegroundColor Yellow
         exit 1
     }
 }
-Write-Host "✅ PyTorch安装完成" -ForegroundColor Green
+Write-Host "SUCCESS: PyTorch installation completed" -ForegroundColor Green
 
-# 安装其他依赖
-Write-Host "`n安装其他依赖包..." -ForegroundColor Cyan
+# Install other dependencies
+Write-Host "`nInstalling other dependencies..." -ForegroundColor Cyan
 $requirements = @(
     "numpy>=1.21.0",
     "pandas>=1.3.0",
@@ -104,78 +104,78 @@ $requirements = @(
 )
 
 foreach ($package in $requirements) {
-    Write-Host "安装 $package..." -ForegroundColor White
+    Write-Host "Installing $package..." -ForegroundColor White
     pip install $package
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "⚠️  $package 安装失败，继续安装其他包..." -ForegroundColor Yellow
+        Write-Host "WARNING: $package installation failed, continuing with other packages..." -ForegroundColor Yellow
     }
 }
 
-# 可选：安装GPU监控工具
-Write-Host "`n是否安装GPU监控工具？(nvidia-ml-py3, gpustat)" -ForegroundColor Yellow
-$installGpuTools = Read-Host "输入 'y' 安装，其他键跳过"
+# Optional: Install GPU monitoring tools
+Write-Host "`nDo you want to install GPU monitoring tools? (nvidia-ml-py3, gpustat)" -ForegroundColor Yellow
+$installGpuTools = Read-Host "Enter 'y' to install, any other key to skip"
 if ($installGpuTools -eq 'y' -or $installGpuTools -eq 'Y') {
-    Write-Host "安装GPU监控工具..." -ForegroundColor Cyan
+    Write-Host "Installing GPU monitoring tools..." -ForegroundColor Cyan
     pip install nvidia-ml-py3 gpustat
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "✅ GPU监控工具安装完成" -ForegroundColor Green
+        Write-Host "SUCCESS: GPU monitoring tools installed" -ForegroundColor Green
     } else {
-        Write-Host "⚠️  GPU监控工具安装失败" -ForegroundColor Yellow
+        Write-Host "WARNING: GPU monitoring tools installation failed" -ForegroundColor Yellow
     }
 }
 
-# 验证安装
-Write-Host "`n验证PyTorch CUDA安装..." -ForegroundColor Cyan
+# Verify installation
+Write-Host "`nVerifying PyTorch CUDA installation..." -ForegroundColor Cyan
 $testScript = @"
 import torch
 import sys
 
-print(f"Python版本: {sys.version}")
-print(f"PyTorch版本: {torch.__version__}")
-print(f"CUDA可用: {torch.cuda.is_available()}")
+print(f"Python version: {sys.version}")
+print(f"PyTorch version: {torch.__version__}")
+print(f"CUDA available: {torch.cuda.is_available()}")
 
 if torch.cuda.is_available():
-    print(f"CUDA版本: {torch.version.cuda}")
-    print(f"cuDNN版本: {torch.backends.cudnn.version()}")
-    print(f"GPU数量: {torch.cuda.device_count()}")
+    print(f"CUDA version: {torch.version.cuda}")
+    print(f"cuDNN version: {torch.backends.cudnn.version()}")
+    print(f"GPU count: {torch.cuda.device_count()}")
     
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)
         print(f"GPU {i}: {props.name} ({props.total_memory / 1e9:.1f}GB)")
     
-    # 测试GPU计算
+    # Test GPU computation
     try:
         x = torch.randn(1000, 1000).cuda()
         y = torch.randn(1000, 1000).cuda()
         z = torch.matmul(x, y)
-        print("✅ GPU计算测试通过")
+        print("SUCCESS: GPU computation test passed")
     except Exception as e:
-        print(f"❌ GPU计算测试失败: {e}")
+        print(f"ERROR: GPU computation test failed: {e}")
 else:
-    print("❌ CUDA不可用，请检查安装")
+    print("ERROR: CUDA not available, please check installation")
 "@
 
 $testScript | python
 $testResult = $LASTEXITCODE
 
-Write-Host "`n=== 安装完成 ===" -ForegroundColor Green
+Write-Host "`n=== Installation Complete ===" -ForegroundColor Green
 
 if ($testResult -eq 0) {
-    Write-Host "✅ 环境安装成功！" -ForegroundColor Green
-    Write-Host "`n现在您可以运行CUDA版本的训练程序：" -ForegroundColor Cyan
+    Write-Host "SUCCESS: Environment setup completed!" -ForegroundColor Green
+    Write-Host "`nYou can now run the CUDA training program:" -ForegroundColor Cyan
     Write-Host "   python core/main_cuda.py" -ForegroundColor White
     
-    Write-Host "`n或者先运行测试：" -ForegroundColor Cyan
+    Write-Host "`nOr run tests first:" -ForegroundColor Cyan
     Write-Host "   python src/cuda_gpu_utils.py" -ForegroundColor White
     Write-Host "   python src/cuda_accelerated_ga.py" -ForegroundColor White
 } else {
-    Write-Host "⚠️  安装可能存在问题，请检查上述输出" -ForegroundColor Yellow
+    Write-Host "WARNING: Installation may have issues, please check output above" -ForegroundColor Yellow
 }
 
-Write-Host "`n有用的命令：" -ForegroundColor Cyan
-Write-Host "   nvidia-smi                    # 查看GPU状态" -ForegroundColor White
-Write-Host "   gpustat                       # 查看GPU使用情况（如果已安装）" -ForegroundColor White
-Write-Host "   python -c 'import torch; print(torch.cuda.is_available())'  # 测试CUDA" -ForegroundColor White
+Write-Host "`nUseful commands:" -ForegroundColor Cyan
+Write-Host "   nvidia-smi                    # Check GPU status" -ForegroundColor White
+Write-Host "   gpustat                       # Check GPU usage (if installed)" -ForegroundColor White
+Write-Host "   python -c 'import torch; print(torch.cuda.is_available())'  # Test CUDA" -ForegroundColor White
 
-Write-Host "`n按任意键退出..." -ForegroundColor Gray
+Write-Host "`nPress any key to exit..." -ForegroundColor Gray
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
