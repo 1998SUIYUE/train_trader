@@ -547,17 +547,21 @@ class CudaGPUAcceleratedGA:
                 mutated[:, :self.config.feature_dim] += weight_mask * weight_noise
             
             with timer("param_mutation", "ga"):
-                # 其他参数变异
-                param_mask = torch.rand(population_size, 6, device=self.device) < self.config.mutation_rate
-                param_noise = torch.randn(population_size, 6, device=self.device) * 0.01
+                # 其他参数变异 (已修复维度问题)
+                param_count = 7  # 总共有7个额外参数
+                param_mask = torch.rand(population_size, param_count, device=self.device) < self.config.mutation_rate
+                param_noise = torch.randn(population_size, param_count, device=self.device) * 0.01
                 
-                # 确保参数在合理范围内
+                # 应用变异到所有7个参数
                 mutated[:, self.config.feature_dim:] += param_mask * param_noise
-                mutated[:, self.config.feature_dim + 1] = torch.clamp(mutated[:, self.config.feature_dim + 1], 0.55, 0.8)  # 买入阈值
-                mutated[:, self.config.feature_dim + 2] = torch.clamp(mutated[:, self.config.feature_dim + 2], 0.2, 0.45)  # 卖出阈值
-                mutated[:, self.config.feature_dim + 3] = torch.clamp(mutated[:, self.config.feature_dim + 3], 0.02, 0.08)  # 止损
-                mutated[:, self.config.feature_dim + 4] = torch.clamp(mutated[:, self.config.feature_dim + 4], 0.5, 1.0)  # 最大仓位
-                mutated[:, self.config.feature_dim + 5] = torch.clamp(mutated[:, self.config.feature_dim + 5], 0.1, 0.25)  # 最大回撤
+                
+                # 确保参数在合理范围内 (已添加交易仓位限制)
+                mutated[:, self.config.feature_dim + 1] = torch.clamp(mutated[:, self.config.feature_dim + 1], 0.55, 0.8)   # 买入阈值
+                mutated[:, self.config.feature_dim + 2] = torch.clamp(mutated[:, self.config.feature_dim + 2], 0.2, 0.45)   # 卖出阈值
+                mutated[:, self.config.feature_dim + 3] = torch.clamp(mutated[:, self.config.feature_dim + 3], 0.02, 0.08)   # 止损
+                mutated[:, self.config.feature_dim + 4] = torch.clamp(mutated[:, self.config.feature_dim + 4], 0.5, 1.0)    # 最大仓位
+                mutated[:, self.config.feature_dim + 5] = torch.clamp(mutated[:, self.config.feature_dim + 5], 0.1, 0.25)   # 最大回撤
+                mutated[:, self.config.feature_dim + 6] = torch.clamp(mutated[:, self.config.feature_dim + 6], 0.01, 0.81)  # 交易仓位
             
             return mutated
     
