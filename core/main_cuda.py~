@@ -10,6 +10,8 @@ import torch
 import numpy as np
 import sys
 import os
+from numpy._core.multiarray import _reconstruct as numpy_reconstruct
+from numpy import ndarray as numpy_ndarray
 
 # 添加src目录到路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -50,6 +52,8 @@ results_dir.mkdir(exist_ok=True)
 
 def main():
     """Main function - CUDA version integrated configuration and automated workflow"""
+    # Allowlist numpy._core.multiarray._reconstruct and numpy.ndarray for torch.load with weights_only=True
+    torch.serialization.add_safe_globals([numpy_reconstruct, numpy_ndarray])
 
     # ==============================================================================
     # ======================= 在这里修改你的训练参数 ============================
@@ -64,8 +68,8 @@ def main():
         "batch_size": 1000,             # CUDA上可以使用更大的批次
         
         # --- 遗传算法参数 ---
-        "population_size": 1000,         # 种群大小 (CUDA上推荐: 1000-5000)
-        "generations": 1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
+        "population_size": 5000,         # 种群大小 (CUDA上推荐: 1000-5000)
+        "generations": -1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
         "mutation_rate": 0.01,           # 变异率 (推荐: 0.005-0.02)
         "crossover_rate": 0.8,           # 交叉率 (推荐: 0.7-0.9)
         "elite_ratio": 0.1,              # 精英保留比例 (推荐: 0.05-0.15)
@@ -81,9 +85,9 @@ def main():
         # - 最大回撤: 自动在 [0.1, 0.25] 范围内进化
         
         # --- 适应度权重 (总和应为1.0) ---
-        "sharpe_weight": 0.5,            # 夏普比率权重
+        "sharpe_weight": 0.4,            # 夏普比率权重
         "drawdown_weight": 0.3,          # 回撤惩罚权重
-        "stability_weight": 0.2,         # 交易稳定性权重
+        "stability_weight": 0.4,         # 交易稳定性权重
         
         # ==================== CUDA专用配置 ====================
         
@@ -358,7 +362,7 @@ def main():
                 generation_log_interval=ACTIVE_CONFIG["generation_log_interval"],
                 auto_save_best=ACTIVE_CONFIG["auto_save_best"],
                 output_dir=output_dir,
-                
+            )
 
         # --- 10. 保存最终结果 ---
         print("训练完成，正在保存最终结果...")

@@ -68,11 +68,11 @@ def main():
         "batch_size": 1000,             # CUDA上可以使用更大的批次
         
         # --- 遗传算法参数 ---
-        "population_size": 1000,         # 种群大小 (CUDA上推荐: 1000-5000)
-        "generations": 1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
+        "population_size": 5000,         # 种群大小 (CUDA上推荐: 1000-5000)
+        "generations": -1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
         "mutation_rate": 0.01,           # 变异率 (推荐: 0.005-0.02)
         "crossover_rate": 0.8,           # 交叉率 (推荐: 0.7-0.9)
-        "elite_ratio": 0.1,              # 精英保留比例 (推荐: 0.05-0.15)
+        "elite_ratio": 0.05,              # 精英保留比例 (推荐: 0.05-0.15)
         "early_stop_patience": 100,      # 无改进停止代数 (推荐: 50-200)
         "use_torch_scan": True,          # 使用torch.scan优化回测 (推荐: True)
         
@@ -85,9 +85,9 @@ def main():
         # - 最大回撤: 自动在 [0.1, 0.25] 范围内进化
         
         # --- 适应度权重 (总和应为1.0) ---
-        "sharpe_weight": 0.5,            # 夏普比率权重
+        "sharpe_weight": 0.4,            # 夏普比率权重
         "drawdown_weight": 0.3,          # 回撤惩罚权重
-        "stability_weight": 0.2,         # 交易稳定性权重
+        "stability_weight": 0.4,         # 交易稳定性权重
         
         # ==================== CUDA专用配置 ====================
         
