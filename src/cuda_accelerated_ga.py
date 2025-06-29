@@ -206,7 +206,7 @@ class CudaGPUAcceleratedGA:
                             # 高精度模式
                             fitness_scores = self.backtest_optimizer.vectorized_backtest_v3(
                                 signals, labels, buy_thresholds, sell_thresholds, 
-                                max_positions, stop_losses, max_drawdowns, trade_positions
+                                max_positions, stop_losses, max_drawdowns
                             )
                     else:
                         with timer("backtest_v2", "backtest"):
