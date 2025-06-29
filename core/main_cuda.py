@@ -75,6 +75,8 @@ def main():
         "save_checkpoints": True,        # 是否保存检查点
         "checkpoint_interval": 1,      # 检查点保存间隔 (CUDA上可以更长)
         "auto_save_best": True,          # 是否自动保存最佳个体
+        "save_best_interval": 100,       # 每隔多少代保存最优个体
+        "save_best_always": True,        # 是否每隔指定代数都保存（不管是否有改进）
         
         # --- 日志设置 ---
         "save_generation_results": True, # 是否保存每代结果
@@ -336,7 +338,9 @@ def main():
             generation_log_file=generation_log_file,
             generation_log_interval=ACTIVE_CONFIG["generation_log_interval"],
             auto_save_best=ACTIVE_CONFIG["auto_save_best"],
-            output_dir=output_dir
+            output_dir=output_dir,
+            save_best_interval=ACTIVE_CONFIG["save_best_interval"],
+            save_best_always=ACTIVE_CONFIG["save_best_always"]
         )
 
         # --- 10. 保存最终结果 ---
