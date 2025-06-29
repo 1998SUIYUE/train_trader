@@ -20,6 +20,12 @@ try:
 except ImportError:
     BACKTEST_OPTIMIZER_AVAILABLE = False
 
+try:
+    from training_progress_monitor import TrainingProgressMonitor, SimpleProgressDisplay
+    PROGRESS_MONITOR_AVAILABLE = True
+except ImportError:
+    PROGRESS_MONITOR_AVAILABLE = False
+
 
 @dataclass
 class CudaGAConfig:
@@ -94,6 +100,10 @@ class CudaGPUAcceleratedGA:
         else:
             self.backtest_optimizer = None
             print("使用内置回测方法")
+        
+        # 初始化进度监控器
+        self.progress_monitor = None
+        self.use_detailed_progress = True
         
         print(f"CudaGPUAcceleratedGA初始化完成")
         print(f"设备: {self.device}")
@@ -551,7 +561,9 @@ class CudaGPUAcceleratedGA:
                generation_log_file: Optional[Path] = None,
                generation_log_interval: int = 1,
                auto_save_best: bool = True,
-               output_dir: Optional[Path] = None) -> Dict[str, Any]:
+               output_dir: Optional[Path] = None,
+               show_detailed_progress: bool = True,
+               progress_update_interval: float = 1.0) -> Dict[str, Any]:
         """
         主进化循环
         
@@ -566,13 +578,26 @@ class CudaGPUAcceleratedGA:
             generation_log_interval: 日志记录间隔
             auto_save_best: 是否自动保存最佳个体
             output_dir: 输出目录
+            show_detailed_progress: 是否显示详细进度
+            progress_update_interval: 进度更新间隔
             
         Returns:
             训练结果
         """
-        print(f"开始进化训练...")
-        print(f"目标代数: {self.config.max_generations if self.config.max_generations > 0 else '无限'}")
-        print(f"早停耐心: {self.config.early_stop_patience}")
+        # 初始化进度监控器
+        if PROGRESS_MONITOR_AVAILABLE and show_detailed_progress:
+            self.progress_monitor = TrainingProgressMonitor(
+                log_file=generation_log_file,
+                update_interval=progress_update_interval
+            )
+            self.progress_monitor.start_training(
+                total_generations=self.config.max_generations,
+                early_stop_patience=self.config.early_stop_patience
+            )
+        else:
+            # 使用简化显示器
+            self.progress_monitor = SimpleProgressDisplay()
+            self.progress_monitor.start_training(self.config.max_generations)
         
         start_time = time.time()
         
@@ -594,13 +619,18 @@ class CudaGPUAcceleratedGA:
                 # 进化一代
                 stats = self.evolve_one_generation(features, labels)
                 
-                # 显示进度
-                if self.generation % generation_log_interval == 0:
-                    print(f"代数 {self.generation:4d} | "
-                          f"最佳适应度: {stats['best_fitness']:8.4f} | "
-                          f"平均适应度: {stats['avg_fitness']:8.4f} | "
-                          f"无改进: {self.no_improvement_count:3d} | "
-                          f"时间: {stats['generation_time']:6.2f}s")
+                # 添加GPU内存信息到统计数据
+                if torch.cuda.is_available():
+                    stats['gpu_memory_allocated'] = torch.cuda.memory_allocated() / 1e9
+                    stats['gpu_memory_reserved'] = torch.cuda.memory_reserved() / 1e9
+                
+                # 添加系统内存信息
+                import psutil
+                stats['system_memory_gb'] = psutil.virtual_memory().used / 1e9
+                
+                # 更新进度监控器
+                if hasattr(self, 'progress_monitor') and self.progress_monitor:
+                    self.progress_monitor.update_generation(self.generation, stats)
                 
                 # 保存日志
                 if save_generation_results and generation_log_file and self.generation % generation_log_interval == 0:
@@ -630,18 +660,24 @@ class CudaGPUAcceleratedGA:
         
         total_time = time.time() - start_time
         
-        print(f"\n训练完成!")
-        print(f"总代数: {self.generation}")
-        print(f"最佳适应度: {self.best_fitness:.4f}")
-        print(f"总训练时间: {total_time:.2f}秒")
-        
-        return {
+        # 显示最终总结
+        final_results = {
             'best_fitness': self.best_fitness,
             'best_individual': self.best_individual,
             'final_generation': self.generation,
             'total_time': total_time,
             'fitness_history': self.fitness_history
         }
+        
+        if hasattr(self, 'progress_monitor') and self.progress_monitor:
+            self.progress_monitor.display_final_summary(final_results)
+        else:
+            print(f"\n训练完成!")
+            print(f"总代数: {self.generation}")
+            print(f"最佳适应度: {self.best_fitness:.4f}")
+            print(f"总训练时间: {total_time:.2f}秒")
+        
+        return final_results
     
     def save_checkpoint(self, filepath: str) -> None:
         """保存检查点"""

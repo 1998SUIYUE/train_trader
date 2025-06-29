@@ -40,7 +40,7 @@ def main():
         
         # --- 遗传算法参数 ---
         "population_size": 1000,         # 种群大小 (CUDA上推荐: 1000-5000)
-        "generations": 1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
+        "generations": -1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
         "mutation_rate": 0.01,           # 变异率 (推荐: 0.005-0.02)
         "crossover_rate": 0.8,           # 交叉率 (推荐: 0.7-0.9)
         "elite_ratio": 0.1,              # 精英保留比例 (推荐: 0.05-0.15)
@@ -73,7 +73,7 @@ def main():
         # --- 保存设置 ---
         "results_dir": "../results",     # 结果输出目录
         "save_checkpoints": True,        # 是否保存检查点
-        "checkpoint_interval": 1,      # 检查点保存间隔 (CUDA上可以更长)
+        "checkpoint_interval": 100,      # 检查点保存间隔 (CUDA上可以更长)
         "auto_save_best": True,          # 是否自动保存最佳个体
         
         # --- 日志设置 ---
@@ -336,7 +336,9 @@ def main():
             generation_log_file=generation_log_file,
             generation_log_interval=ACTIVE_CONFIG["generation_log_interval"],
             auto_save_best=ACTIVE_CONFIG["auto_save_best"],
-            output_dir=output_dir
+            output_dir=output_dir,
+            show_detailed_progress=True,  # 启用详细进度监控
+            progress_update_interval=1.0  # 每秒更新一次
         )
 
         # --- 10. 保存最终结果 ---
