@@ -1,6 +1,6 @@
 """
-CUDA版遗传算法交易员训练主程序
-支持NVIDIA GPU CUDA加速
+CUDA-accelerated Genetic Algorithm Trading Agent Training
+Supports NVIDIA GPU CUDA acceleration
 """
 
 import time
@@ -24,7 +24,7 @@ results_dir.mkdir(exist_ok=True)
 
 
 def main():
-    """主函数 - CUDA版本集成配置与自动化流程"""
+    """Main function - CUDA version integrated configuration and automated workflow"""
 
     # ==============================================================================
     # ======================= 在这里修改你的训练参数 ============================

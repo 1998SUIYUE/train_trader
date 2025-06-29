@@ -10,11 +10,24 @@ from typing import Tuple, Optional, List, Dict
 from pathlib import Path
 
 try:
-    from .gpu_utils import WindowsGPUManager, get_windows_gpu_manager
     from .cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager
+    CUDA_AVAILABLE = True
 except ImportError:
-    from gpu_utils import WindowsGPUManager, get_windows_gpu_manager
-    from cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager
+    try:
+        from cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager
+        CUDA_AVAILABLE = True
+    except ImportError:
+        CUDA_AVAILABLE = False
+
+try:
+    from .gpu_utils import WindowsGPUManager, get_windows_gpu_manager
+    DIRECTML_AVAILABLE = True
+except ImportError:
+    try:
+        from gpu_utils import WindowsGPUManager, get_windows_gpu_manager
+        DIRECTML_AVAILABLE = True
+    except ImportError:
+        DIRECTML_AVAILABLE = False
 
 try:
     from .normalization_strategies import DataNormalizer
@@ -38,17 +51,17 @@ class GPUDataProcessor:
         # 自动选择GPU管理器
         if gpu_manager is None:
             # 优先尝试CUDA，如果不可用则使用DirectML
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    self.gpu_manager = get_cuda_gpu_manager()
-                    print("自动选择CUDA GPU管理器")
-                else:
-                    self.gpu_manager = get_windows_gpu_manager()
-                    print("自动选择DirectML GPU管理器")
-            except:
+            import torch
+            if CUDA_AVAILABLE and torch.cuda.is_available():
+                self.gpu_manager = get_cuda_gpu_manager()
+                print("Auto-selected CUDA GPU manager")
+            elif DIRECTML_AVAILABLE:
                 self.gpu_manager = get_windows_gpu_manager()
-                print("默认使用DirectML GPU管理器")
+                print("Auto-selected DirectML GPU manager")
+            else:
+                # 创建一个基本的CPU管理器
+                self.gpu_manager = self._create_cpu_manager()
+                print("Using CPU manager (no GPU acceleration available)")
         else:
             self.gpu_manager = gpu_manager
         
@@ -66,6 +79,28 @@ class GPUDataProcessor:
         print(f"滑动窗口大小: {window_size}")
         print(f"设备: {self.device}")
         print("---------------------------")
+    
+    def _create_cpu_manager(self):
+        """创建一个基本的CPU管理器"""
+        class CPUManager:
+            def __init__(self):
+                self.device = torch.device('cpu')
+            
+            def to_gpu(self, data, dtype=torch.float32):
+                if isinstance(data, np.ndarray):
+                    return torch.from_numpy(data).to(dtype)
+                elif isinstance(data, torch.Tensor):
+                    return data.to(dtype)
+                else:
+                    return torch.tensor(data, dtype=dtype)
+            
+            def to_cpu(self, tensor):
+                return tensor.detach().numpy()
+            
+            def clear_cache(self):
+                pass
+        
+        return CPUManager()
     
     def load_data(self, file_path: str) -> pd.DataFrame:
         """
