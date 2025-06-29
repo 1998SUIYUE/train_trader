@@ -193,12 +193,12 @@ class CudaGPUAcceleratedGA:
             with timer("initialize_trading_params", "ga"):
                 # 初始化其他参数
                 self.population[:, self.config.feature_dim] = torch.randn(self.config.population_size, device=self.device) * 0.1  # 偏置
-                self.population[:, self.config.feature_dim + 1] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.55  # 买入阈值 [0.55, 0.8]
-                self.population[:, self.config.feature_dim + 2] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.2   # 卖出阈值 [0.2, 0.45]
+                self.population[:, self.config.feature_dim + 1] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.5 + 0.50  # 买入阈值 [0.55, 0.8]
+                self.population[:, self.config.feature_dim + 2] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.45 + 0   # 卖出阈值 [0.0, 0.45]
                 self.population[:, self.config.feature_dim + 3] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.06 + 0.02  # 止损 [0.02, 0.08]
                 self.population[:, self.config.feature_dim + 4] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.5 + 0.5   # 最大仓位 [0.5, 1.0]
                 self.population[:, self.config.feature_dim + 5] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.15 + 0.1  # 最大回撤 [0.1, 0.25]
-                self.population[:, self.config.feature_dim + 6] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.8 + 0.01   # 交易仓位 [0.2, 1.0]
+                self.population[:, self.config.feature_dim + 6] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.99 + 0.01   # 交易仓位 [0.2, 1.0]
             
             # 初始化适应度分数
             self.fitness_scores = torch.zeros(self.config.population_size, device=self.device)
