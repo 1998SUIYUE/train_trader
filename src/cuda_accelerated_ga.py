@@ -134,6 +134,7 @@ class CudaGPUAcceleratedGA:
         # 算法状态
         self.generation = 0
         self.best_fitness = -float('inf')
+        self.best_avg_fitness = -float('inf') # 新增：用于跟踪平均适应度
         self.best_individual = None
         self.fitness_history = []
         self.no_improvement_count = 0
@@ -581,20 +582,25 @@ class CudaGPUAcceleratedGA:
             
             with timer("update_best_individual", "ga"):
                 # 记录最佳个体
+                current_avg_fitness = torch.mean(self.fitness_scores).item()
                 best_idx = torch.argmax(self.fitness_scores)
                 current_best_fitness = self.fitness_scores[best_idx].item()
-                
-                if current_best_fitness > self.best_fitness:
-                    self.best_fitness = current_best_fitness
-                    self.best_individual = self.gpu_manager.to_cpu(self.population[best_idx])
+
+                if current_avg_fitness > self.best_avg_fitness:
+                    self.best_avg_fitness = current_avg_fitness
                     self.no_improvement_count = 0
                     # 立即保存最佳个体，覆盖旧文件
                     if output_dir and self.best_individual is not None:
                         best_path = output_dir / "best_individual.npy"
                         np.save(best_path, self.best_individual)
-                        print(f"💾 新的最佳个体已保存: {best_path.name} (适应度: {self.best_fitness:.4f})")
+                        print(f"💾 新的最佳个体已保存: {best_path.name} (平均适应度: {self.best_avg_fitness:.4f})")
                 else:
                     self.no_improvement_count += 1
+
+                # 始终更新最佳个体（基于最高适应度）
+                if current_best_fitness > self.best_fitness:
+                    self.best_fitness = current_best_fitness
+                    self.best_individual = self.gpu_manager.to_cpu(self.population[best_idx])
             
             with timer("elite_selection", "ga"):
                 # 精英保留
@@ -766,6 +772,7 @@ class CudaGPUAcceleratedGA:
             'population': self.gpu_manager.to_cpu(self.population),
             'fitness_scores': self.gpu_manager.to_cpu(self.fitness_scores),
             'best_fitness': self.best_fitness,
+            'best_avg_fitness': self.best_avg_fitness,
             'best_individual': self.best_individual,
             'fitness_history': self.fitness_history,
             'no_improvement_count': self.no_improvement_count,
@@ -782,6 +789,7 @@ class CudaGPUAcceleratedGA:
         self.population = self.gpu_manager.to_gpu(checkpoint['population'])
         self.fitness_scores = self.gpu_manager.to_gpu(checkpoint['fitness_scores'])
         self.best_fitness = checkpoint['best_fitness']
+        self.best_avg_fitness = checkpoint['best_avg_fitness']
         self.best_individual = checkpoint['best_individual']
         self.fitness_history = checkpoint['fitness_history']
         self.no_improvement_count = checkpoint['no_improvement_count']

@@ -358,7 +358,7 @@ def main():
                 generation_log_interval=ACTIVE_CONFIG["generation_log_interval"],
                 auto_save_best=ACTIVE_CONFIG["auto_save_best"],
                 output_dir=output_dir,
-                
+            )
 
         # --- 10. 保存最终结果 ---
         print("训练完成，正在保存最终结果...")

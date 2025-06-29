@@ -18,6 +18,31 @@ from cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager, check_cuda_comp
 from cuda_accelerated_ga import CudaGPUAcceleratedGA, CudaGAConfig
 from data_processor import GPUDataProcessor
 
+# 性能分析
+try:
+    from performance_profiler import get_profiler, start_monitoring, stop_monitoring, print_summary, save_report, timer
+    PERFORMANCE_PROFILER_AVAILABLE = True
+    print("🔍 性能分析器已启用")
+except ImportError:
+    PERFORMANCE_PROFILER_AVAILABLE = False
+    print("⚠️  性能分析器不可用")
+    # 创建空的上下文管理器
+    class timer:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    def start_monitoring(*args, **kwargs):
+        pass
+    def stop_monitoring():
+        pass
+    def print_summary(*args, **kwargs):
+        pass
+    def save_report(*args, **kwargs):
+        pass
+
 # 确保results目录存在
 results_dir = Path('../results')
 results_dir.mkdir(exist_ok=True)
@@ -40,21 +65,20 @@ def main():
         
         # --- 遗传算法参数 ---
         "population_size": 1000,         # 种群大小 (CUDA上推荐: 1000-5000)
-        "generations": -1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
+        "generations": 1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
         "mutation_rate": 0.01,           # 变异率 (推荐: 0.005-0.02)
         "crossover_rate": 0.8,           # 交叉率 (推荐: 0.7-0.9)
         "elite_ratio": 0.1,              # 精英保留比例 (推荐: 0.05-0.15)
         "early_stop_patience": 100,      # 无改进停止代数 (推荐: 50-200)
         "use_torch_scan": True,          # 使用torch.scan优化回测 (推荐: True)
         
-        # --- 交易策略参数 (Sigmoid[0,1]区间) ---
-        "buy_threshold": 0.6,            # 买入阈值 (>0.5偏向买入, 推荐: 0.55-0.8)
-        "sell_threshold": 0.4,           # 卖出阈值 (<0.5偏向卖出, 推荐: 0.2-0.45)
-        
-        # --- 风险管理参数 ---
-        "stop_loss": 0.05,               # 止损比例 (推荐: 0.02-0.08)
-        "max_position": 0.8,             # 最大仓位 (推荐: 0.5-1.0)
-        "max_drawdown": 0.2,             # 最大回撤限制 (推荐: 0.1-0.3)
+        # --- 交易策略参数 (现在由遗传算法自动进化) ---
+        # 注意：以下参数现在作为基因自动进化，不需要手动设置
+        # - 买入阈值: 自动在 [0.55, 0.8] 范围内进化
+        # - 卖出阈值: 自动在 [0.2, 0.45] 范围内进化
+        # - 止损比例: 自动在 [0.02, 0.08] 范围内进化  
+        # - 最大仓位: 自动在 [0.5, 1.0] 范围内进化
+        # - 最大回撤: 自动在 [0.1, 0.25] 范围内进化
         
         # --- 适应度权重 (总和应为1.0) ---
         "sharpe_weight": 0.5,            # 夏普比率权重
@@ -73,8 +97,9 @@ def main():
         # --- 保存设置 ---
         "results_dir": "../results",     # 结果输出目录
         "save_checkpoints": True,        # 是否保存检查点
-        "checkpoint_interval": 100,      # 检查点保存间隔 (CUDA上可以更长)
+        "checkpoint_interval": 1,      # 检查点保存间隔 (CUDA上可以更长)
         "auto_save_best": True,          # 是否自动保存最佳个体
+        "save_best_interval": 100,       # 每隔多少代保存最优个体
         
         # --- 日志设置 ---
         "save_generation_results": True, # 是否保存每代结果
@@ -115,31 +140,23 @@ def main():
         "gpu_memory_fraction": 0.95,
     }
     
-    # 🛡️ 保守交易策略 (CUDA版)
+    # 🛡️ 保守交易策略 (CUDA版) - 注重风险控制
     CONSERVATIVE_CONFIG = {
         **TRAINING_CONFIG,
-        "buy_threshold": 0.7,            # 更严格的买入条件
-        "sell_threshold": 0.3,           # 更严格的卖出条件
-        "stop_loss": 0.03,               # 更严格的止损
-        "max_position": 0.6,             # 较小的仓位
-        "max_drawdown": 0.15,            # 较小的回撤容忍
+        # 注意：交易参数现在由基因自动进化，这里只调整适应度权重来偏向保守策略
         "sharpe_weight": 0.6,            # 更重视风险调整收益
-        "drawdown_weight": 0.4,
-        "stability_weight": 0.0,
+        "drawdown_weight": 0.4,          # 更重视回撤控制
+        "stability_weight": 0.0,         # 不考虑交易频率
         "population_size": 1500,         # 更大的种群以提高稳定性
     }
     
-    # ⚡ 激进交易策略 (CUDA版)
+    # ⚡ 激进交易策略 (CUDA版) - 追求高收益
     AGGRESSIVE_CONFIG = {
         **TRAINING_CONFIG,
-        "buy_threshold": 0.55,           # 更宽松的买入条件
-        "sell_threshold": 0.45,          # 更宽松的卖出条件
-        "stop_loss": 0.08,               # 更宽松的止损
-        "max_position": 1.0,             # 满仓交易
-        "max_drawdown": 0.3,             # 更大的回撤容忍
-        "sharpe_weight": 0.3,            # 更重视收益
-        "drawdown_weight": 0.2,
-        "stability_weight": 0.5,         # 重视交易频率
+        # 注意：交易参数现在由基因自动进化，这里只调整适应度权重来偏向激进策略
+        "sharpe_weight": 0.3,            # 相对较少重视风险调整
+        "drawdown_weight": 0.2,          # 较少重视回撤控制
+        "stability_weight": 0.5,         # 重视交易频率和活跃度
         "population_size": 2000,         # 更大的种群以探索更多策略
     }
     
@@ -251,9 +268,15 @@ def main():
             print("未发现检查点，将开始新的训练。")
 
     try:
-        # --- 5. 初始化CUDA GPU管理器 ---
-        print("初始化CUDA GPU环境...")
-        gpu_manager = get_cuda_gpu_manager(device_id=ACTIVE_CONFIG.get("gpu_device_id", 0))
+        # --- 5. 启动性能监控 ---
+        if PERFORMANCE_PROFILER_AVAILABLE:
+            start_monitoring(interval=2.0)  # 每2秒记录一次内存使用
+            print("🔍 性能监控已启动")
+        
+        # --- 6. 初始化CUDA GPU管理器 ---
+        with timer("gpu_initialization", "setup"):
+            print("初始化CUDA GPU环境...")
+            gpu_manager = get_cuda_gpu_manager(device_id=ACTIVE_CONFIG.get("gpu_device_id", 0))
         
         # 设置GPU内存使用限制
         if "gpu_memory_fraction" in ACTIVE_CONFIG:
@@ -266,80 +289,76 @@ def main():
         print(f"GPU内存: {gpu_alloc:.2f}GB / {gpu_total:.2f}GB")
         print(f"系统内存: {sys_used:.2f}GB / {sys_total:.2f}GB")
 
-        # --- 6. 数据处理 ---
-        print("\n开始数据处理...")
-        
-        # 注意：这里我们需要修改GPUDataProcessor以支持CUDA
-        # 暂时使用原有的处理器，但需要确保数据能正确转移到CUDA GPU
-        processor = GPUDataProcessor(
-            window_size=ACTIVE_CONFIG["window_size"],
-            normalization_method=ACTIVE_CONFIG["normalization"],
-            gpu_manager=gpu_manager  # 传入CUDA GPU管理器
-        )
-        
-        train_features, train_labels = processor.load_and_process_data(latest_data_file)
-        print(f"训练数据形状: {train_features.shape}, 标签数据形状: {train_labels.shape}")
+        # --- 7. 数据处理 ---
+        with timer("data_processing", "setup"):
+            print("\n开始数据处理...")
+            
+            # 注意：这里我们需要修改GPUDataProcessor以支持CUDA
+            # 暂时使用原有的处理器，但需要确保数据能正确转移到CUDA GPU
+            processor = GPUDataProcessor(
+                window_size=ACTIVE_CONFIG["window_size"],
+                normalization_method=ACTIVE_CONFIG["normalization"],
+                gpu_manager=gpu_manager  # 传入CUDA GPU管理器
+            )
+            
+            train_features, train_labels = processor.load_and_process_data(latest_data_file)
+            print(f"训练数据形状: {train_features.shape}, 标签数据形状: {train_labels.shape}")
 
-        # --- 7. 配置并初始化CUDA遗传算法 ---
-        ga_config = CudaGAConfig(
-            population_size=ACTIVE_CONFIG["population_size"],
-            max_generations=ACTIVE_CONFIG["generations"],
-            mutation_rate=ACTIVE_CONFIG["mutation_rate"],
-            crossover_rate=ACTIVE_CONFIG["crossover_rate"],
-            elite_ratio=ACTIVE_CONFIG["elite_ratio"],
-            feature_dim=train_features.shape[1],
-            # 交易策略参数
-            buy_threshold=ACTIVE_CONFIG["buy_threshold"],
-            sell_threshold=ACTIVE_CONFIG["sell_threshold"],
-            # 风险管理参数
-            stop_loss=ACTIVE_CONFIG["stop_loss"],
-            max_position=ACTIVE_CONFIG["max_position"],
-            max_drawdown=ACTIVE_CONFIG["max_drawdown"],
-            # 适应度函数权重
-            sharpe_weight=ACTIVE_CONFIG["sharpe_weight"],
-            drawdown_weight=ACTIVE_CONFIG["drawdown_weight"],
-            stability_weight=ACTIVE_CONFIG["stability_weight"],
-            # GPU优化参数
-            batch_size=ACTIVE_CONFIG["batch_size"],
-            early_stop_patience=ACTIVE_CONFIG["early_stop_patience"],
-            use_torch_scan=ACTIVE_CONFIG["use_torch_scan"]
-        )
-        print(f"CUDA遗传算法配置: {ga_config}")
-        ga = CudaGPUAcceleratedGA(ga_config, gpu_manager)
+        # --- 8. 配置并初始化CUDA遗传算法 ---
+        with timer("ga_initialization", "setup"):
+            ga_config = CudaGAConfig(
+                population_size=ACTIVE_CONFIG["population_size"],
+                max_generations=ACTIVE_CONFIG["generations"],
+                mutation_rate=ACTIVE_CONFIG["mutation_rate"],
+                crossover_rate=ACTIVE_CONFIG["crossover_rate"],
+                elite_ratio=ACTIVE_CONFIG["elite_ratio"],
+                feature_dim=train_features.shape[1],
+                # 注意：交易策略和风险管理参数现在作为基因自动进化，不再从配置中读取
+                # 适应度函数权重
+                sharpe_weight=ACTIVE_CONFIG["sharpe_weight"],
+                drawdown_weight=ACTIVE_CONFIG["drawdown_weight"],
+                stability_weight=ACTIVE_CONFIG["stability_weight"],
+                # GPU优化参数
+                batch_size=ACTIVE_CONFIG["batch_size"],
+                early_stop_patience=ACTIVE_CONFIG["early_stop_patience"],
+                use_torch_scan=ACTIVE_CONFIG["use_torch_scan"]
+            )
+            print(f"CUDA遗传算法配置: {ga_config}")
+            ga = CudaGPUAcceleratedGA(ga_config, gpu_manager)
 
-        # --- 8. 智能加载或初始化种群 ---
+        # --- 9. 智能加载或初始化种群 ---
         if load_checkpoint_path:
-            ga.load_checkpoint(str(load_checkpoint_path))
+            with timer("load_checkpoint", "setup"):
+                ga.load_checkpoint(str(load_checkpoint_path))
         else:
             print("初始化新的种群...")
             ga.initialize_population(seed=int(time.time())) # 使用时间戳作为种子
 
-        # --- 9. 开始进化 ---
-        print("开始CUDA加速进化过程...")
-        
-        # 使用固定的日志文件名，所有训练结果都追加到同一个文件
-        generation_log_file = output_dir / "training_history_cuda.jsonl"
-        print(f"📝 训练日志将写入: {generation_log_file}")
-        
-        # 启用混合精度训练（实验性）
-        if ACTIVE_CONFIG.get("mixed_precision", False):
-            print("🧪 启用混合精度训练（实验性功能）")
-            # 这里可以添加混合精度训练的代码
-        
-        results = ga.evolve(
-            train_features,
-            train_labels,
-            save_checkpoints=ACTIVE_CONFIG["save_checkpoints"],
-            checkpoint_dir=checkpoint_dir,
-            checkpoint_interval=ACTIVE_CONFIG["checkpoint_interval"],
-            save_generation_results=ACTIVE_CONFIG["save_generation_results"],
-            generation_log_file=generation_log_file,
-            generation_log_interval=ACTIVE_CONFIG["generation_log_interval"],
-            auto_save_best=ACTIVE_CONFIG["auto_save_best"],
-            output_dir=output_dir,
-            show_detailed_progress=True,  # 启用详细进度监控
-            progress_update_interval=1.0  # 每秒更新一次
-        )
+        # --- 10. 开始进化 ---
+        with timer("evolution_process", "training"):
+            print("开始CUDA加速进化过程...")
+            
+            # 使用固定的日志文件名，所有训练结果都追加到同一个文件
+            generation_log_file = output_dir / "training_history_cuda.jsonl"
+            print(f"📝 训练日志将写入: {generation_log_file}")
+            
+            # 启用混合精度训练（实验性）
+            if ACTIVE_CONFIG.get("mixed_precision", False):
+                print("🧪 启用混合精度训练（实验性功能）")
+                # 这里可以添加混合精度训练的代码
+            
+            results = ga.evolve(
+                train_features,
+                train_labels,
+                save_checkpoints=ACTIVE_CONFIG["save_checkpoints"],
+                checkpoint_dir=checkpoint_dir,
+                
+                save_generation_results=ACTIVE_CONFIG["save_generation_results"],
+                generation_log_file=generation_log_file,
+                generation_log_interval=ACTIVE_CONFIG["generation_log_interval"],
+                auto_save_best=ACTIVE_CONFIG["auto_save_best"],
+                output_dir=output_dir,
+                
 
         # --- 10. 保存最终结果 ---
         print("训练完成，正在保存最终结果...")
@@ -375,6 +394,20 @@ def main():
         gpu_alloc, gpu_total, sys_used, sys_total = gpu_manager.get_memory_usage()
         print(f"最终GPU内存使用: {gpu_alloc:.2f}GB / {gpu_total:.2f}GB")
         print(f"最终系统内存使用: {sys_used:.2f}GB / {sys_total:.2f}GB")
+        
+        # --- 12. 性能分析报告 ---
+        if PERFORMANCE_PROFILER_AVAILABLE:
+            stop_monitoring()
+            print("\n" + "="*80)
+            print("🔍 性能分析报告")
+            print("="*80)
+            print_summary(detailed=True)
+            
+            # 保存详细的性能报告
+            performance_report_path = output_dir / f"performance_report_cuda_{timestamp}.json"
+            save_report(performance_report_path)
+            print(f"📊 详细性能报告已保存: {performance_report_path}")
+            print("="*80)
 
     except Exception as e:
         print(f"训练过程中发生严重错误: {e}")
