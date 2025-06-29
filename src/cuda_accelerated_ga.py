@@ -11,6 +11,7 @@ import time
 import json
 from pathlib import Path
 import gc
+import torch.jit
 
 from cuda_gpu_utils import CudaGPUManager
 
@@ -78,6 +79,42 @@ class CudaGAConfig:
         assert abs(self.sharpe_weight + self.drawdown_weight + self.stability_weight - 1.0) < 1e-6, \
             "适应度权重之和必须等于1.0"
 
+@torch.jit.script
+def _jit_selection(population: torch.Tensor, fitness_scores: torch.Tensor, tournament_size: int) -> torch.Tensor:
+    """JIT编译的选择操作"""
+    population_size = population.shape[0]
+    selected_indices = torch.zeros(population_size, dtype=torch.long, device=population.device)
+    
+    for i in range(population_size):
+        tournament_indices = torch.randint(0, population_size, (tournament_size,), device=population.device)
+        tournament_fitness = fitness_scores[tournament_indices]
+        winner_idx = tournament_indices[torch.argmax(tournament_fitness)]
+        selected_indices[i] = winner_idx
+        
+    return population[selected_indices]
+
+@torch.jit.script
+def _jit_crossover(parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
+    """JIT编译的交叉操作"""
+    population_size, individual_size = parents.shape
+    offspring = parents.clone()
+    
+    # JIT-friendly loop
+    pairs = torch.randperm(population_size, device=parents.device).view(-1, 2)
+    
+    for i in range(pairs.shape[0]):
+        parent1_idx = pairs[i, 0]
+        parent2_idx = pairs[i, 1]
+        
+        if torch.rand(1, device=parents.device) < crossover_rate:
+            mask = torch.rand(individual_size, device=parents.device) < 0.5
+            
+            # Safe swap for JIT
+            temp = offspring[parent1_idx].clone()
+            offspring[parent1_idx][mask] = offspring[parent2_idx][mask]
+            offspring[parent2_idx][mask] = temp[mask]
+            
+    return offspring
 
 class CudaGPUAcceleratedGA:
     """CUDA GPU加速遗传算法"""
@@ -492,66 +529,16 @@ class CudaGPUAcceleratedGA:
         
         return fitness
     
-    import torch.jit
-
-# ... (其他导入)
-
-@torch.jit.script
-def _jit_selection(population: torch.Tensor, fitness_scores: torch.Tensor, tournament_size: int) -> torch.Tensor:
-    """JIT编译的选择操作"""
-    population_size = population.shape[0]
-    selected_indices = torch.zeros(population_size, dtype=torch.long, device=population.device)
-    
-    for i in range(population_size):
-        tournament_indices = torch.randint(0, population_size, (tournament_size,), device=population.device)
-        tournament_fitness = fitness_scores[tournament_indices]
-        winner_idx = tournament_indices[torch.argmax(tournament_fitness)]
-        selected_indices[i] = winner_idx
-        
-    return population[selected_indices]
-
-@torch.jit.script
-def _jit_crossover(parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
-    """JIT编译的交叉操作"""
-    population_size, individual_size = parents.shape
-    offspring = parents.clone()
-    
-    pairs = torch.randperm(population_size, device=parents.device).view(-1, 2)
-    
-    for i in range(pairs.shape[0]):
-        parent1_idx = pairs[i, 0]
-        parent2_idx = pairs[i, 1]
-        
-        if torch.rand(1, device=parents.device) < crossover_rate:
-            mask = torch.rand(individual_size, device=parents.device) < 0.5
-            
-            temp = offspring[parent1_idx].clone()
-            offspring[parent1_idx][mask] = offspring[parent2_idx][mask]
-            offspring[parent2_idx][mask] = temp[mask]
-            
-    return offspring
-
-class CudaGPUAcceleratedGA:
-    """CUDA GPU加速遗传算法"""
-    
-    def __init__(self, config: CudaGAConfig, gpu_manager: CudaGPUManager):
-        # ... (原有的 __init__ 代码)
-
-    # ... (其他类方法)
-
     def selection(self) -> torch.Tensor:
         """选择操作 - 锦标赛选择"""
         with timer("selection", "ga"):
             tournament_size = max(2, self.config.population_size // 20)
             return _jit_selection(self.population, self.fitness_scores, tournament_size)
-
+    
     def crossover(self, parents: torch.Tensor) -> torch.Tensor:
         """交叉操作 - 均匀交叉"""
         with timer("crossover", "ga"):
             return _jit_crossover(parents, self.config.crossover_rate)
-
-    # ... (其他类方法)
-
     
     def mutation(self, population: torch.Tensor) -> torch.Tensor:
         """变异操作"""
@@ -739,7 +726,7 @@ class CudaGPUAcceleratedGA:
                     
                     if should_save_best:
                         best_path = output_dir / f"best_individual_gen_{self.generation}_{save_reason}.npy"
-                        np.save(best_path, self.best_individual)
+                        np.save(self.best_individual, self.best_individual)
                         print(f"💾 已保存最优个体: {best_path.name} (适应度: {self.best_fitness:.4f})")
                 
                 # 定期清理GPU缓存
