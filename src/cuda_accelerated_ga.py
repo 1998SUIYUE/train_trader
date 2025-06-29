@@ -564,8 +564,7 @@ class CudaGPUAcceleratedGA:
                output_dir: Optional[Path] = None,
                show_detailed_progress: bool = True,
                progress_update_interval: float = 1.0,
-               save_best_interval: int = 100,
-               save_best_always: bool = True) -> Dict[str, Any]:
+               save_best_interval: int = 100) -> Dict[str, Any]:
         """
         主进化循环
         
@@ -582,8 +581,7 @@ class CudaGPUAcceleratedGA:
             output_dir: 输出目录
             show_detailed_progress: 是否显示详细进度
             progress_update_interval: 进度更新间隔
-            save_best_interval: 保存最优个体的间隔代数
-            save_best_always: 是否每隔指定代数都保存最优个体（不管是否有改进）
+            save_best_interval: 保存最优个体的间隔代数（默认100代）
             
         Returns:
             训练结果
@@ -647,22 +645,18 @@ class CudaGPUAcceleratedGA:
                     checkpoint_path = checkpoint_dir / f"checkpoint_gen_{self.generation}.pt"
                     self.save_checkpoint(str(checkpoint_path))
                 
-                # 自动保存最佳个体
+                # 自动保存最佳个体 - 只在指定间隔保存
                 should_save_best = False
                 if auto_save_best and output_dir:
-                    # 原有逻辑：有改进时保存
-                    if self.no_improvement_count == 0:
-                        should_save_best = True
-                        save_reason = "improved"
-                    # 新增逻辑：每隔指定代数保存最优个体
-                    elif save_best_always and self.generation % save_best_interval == 0:
+                    # 只在每隔指定代数保存最优个体（默认100代）
+                    if self.generation % save_best_interval == 0:
                         should_save_best = True
                         save_reason = f"interval_{save_best_interval}"
                     
                     if should_save_best:
                         best_path = output_dir / f"best_individual_gen_{self.generation}_{save_reason}.npy"
                         np.save(best_path, self.best_individual)
-                        print(f"💾 已保存最优个体: {best_path.name} (原因: {save_reason})")
+                        print(f"💾 已保存最优个体: {best_path.name} (适应度: {self.best_fitness:.4f})")
                 
                 # 定期清理GPU缓存
                 if self.generation % 10 == 0:
