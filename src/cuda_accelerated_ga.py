@@ -571,7 +571,7 @@ class CudaGPUAcceleratedGA:
             
             return mutated
     
-    def evolve_one_generation(self, features: torch.Tensor, labels: torch.Tensor) -> Dict[str, float]:
+    def evolve_one_generation(self, features: torch.Tensor, labels: torch.Tensor, output_dir: Optional[Path] = None) -> Dict[str, float]:
         """进化一代"""
         with timer("evolve_one_generation", "ga"):
             start_time = time.time()
@@ -588,6 +588,11 @@ class CudaGPUAcceleratedGA:
                     self.best_fitness = current_best_fitness
                     self.best_individual = self.gpu_manager.to_cpu(self.population[best_idx])
                     self.no_improvement_count = 0
+                    # 立即保存最佳个体，覆盖旧文件
+                    if output_dir and self.best_individual is not None:
+                        best_path = output_dir / "best_individual.npy"
+                        np.save(best_path, self.best_individual)
+                        print(f"💾 新的最佳个体已保存: {best_path.name} (适应度: {self.best_fitness:.4f})")
                 else:
                     self.no_improvement_count += 1
             
@@ -627,15 +632,13 @@ class CudaGPUAcceleratedGA:
     def evolve(self, features: torch.Tensor, labels: torch.Tensor,
                save_checkpoints: bool = True,
                checkpoint_dir: Optional[Path] = None,
-               checkpoint_interval: int = 50,
                save_generation_results: bool = True,
                generation_log_file: Optional[Path] = None,
                generation_log_interval: int = 1,
                auto_save_best: bool = True,
                output_dir: Optional[Path] = None,
                show_detailed_progress: bool = True,
-               progress_update_interval: float = 1.0,
-               save_best_interval: int = 100) -> Dict[str, Any]:
+               progress_update_interval: float = 1.0) -> Dict[str, Any]:
         """
         主进化循环
         
@@ -644,7 +647,6 @@ class CudaGPUAcceleratedGA:
             labels: 训练标签
             save_checkpoints: 是否保存检查点
             checkpoint_dir: 检查点目录
-            checkpoint_interval: 检查点保存间隔
             save_generation_results: 是否保存每代结果
             generation_log_file: 日志文件路径
             generation_log_interval: 日志记录间隔
@@ -652,7 +654,6 @@ class CudaGPUAcceleratedGA:
             output_dir: 输出目录
             show_detailed_progress: 是否显示详细进度
             progress_update_interval: 进度更新间隔
-            save_best_interval: 保存最优个体的间隔代数（默认100代）
             
         Returns:
             训练结果
@@ -690,7 +691,7 @@ class CudaGPUAcceleratedGA:
                     break
                 
                 # 进化一代
-                stats = self.evolve_one_generation(features, labels)
+                stats = self.evolve_one_generation(features, labels, output_dir)
                 
                 # 添加GPU内存信息到统计数据
                 if torch.cuda.is_available():
@@ -711,23 +712,9 @@ class CudaGPUAcceleratedGA:
                 #         json.dump(stats, f, ensure_ascii=False)
                 #         f.write('\n')
                 
-                # 保存检查点
-                if save_checkpoints and checkpoint_dir and self.generation % checkpoint_interval == 0:
-                    checkpoint_path = checkpoint_dir / f"checkpoint_gen_{self.generation}.pt"
-                    self.save_checkpoint(str(checkpoint_path))
                 
-                # 自动保存最佳个体 - 只在指定间隔保存
-                should_save_best = False
-                if auto_save_best and output_dir:
-                    # 只在每隔指定代数保存最优个体（默认100代）
-                    if self.generation % save_best_interval == 0:
-                        should_save_best = True
-                        save_reason = f"interval_{save_best_interval}"
-                    
-                    if should_save_best:
-                        best_path = output_dir / f"best_individual_gen_{self.generation}_{save_reason}.npy"
-                        np.save(best_path, self.best_individual)
-                        print(f"💾 已保存最优个体: {best_path.name} (适应度: {self.best_fitness:.4f})")
+                
+                
                 
                 # 定期清理GPU缓存
                 if self.generation % 10 == 0:
@@ -740,6 +727,18 @@ class CudaGPUAcceleratedGA:
             raise
         
         total_time = time.time() - start_time
+
+        # 在训练结束时保存最终检查点
+        if save_checkpoints and checkpoint_dir:
+            final_checkpoint_path = checkpoint_dir / "final_checkpoint.pt"
+            self.save_checkpoint(str(final_checkpoint_path))
+            print(f"💾 最终检查点已保存: {final_checkpoint_path.name}")
+
+        # 在训练结束时保存最终最佳个体
+        if auto_save_best and output_dir and self.best_individual is not None:
+            final_best_path = output_dir / "best_individual.npy"
+            np.save(final_best_path, self.best_individual)
+            print(f"💾 最终最佳个体已保存: {final_best_path.name} (适应度: {self.best_fitness:.4f})")
         
         # 显示最终总结
         final_results = {
@@ -777,7 +776,7 @@ class CudaGPUAcceleratedGA:
     
     def load_checkpoint(self, filepath: str) -> None:
         """加载检查点"""
-        checkpoint = torch.load(filepath, map_location='cpu')
+        checkpoint = torch.load(filepath, map_location='cpu', weights_only=True)
         
         self.generation = checkpoint['generation']
         self.population = self.gpu_manager.to_gpu(checkpoint['population'])
@@ -796,9 +795,16 @@ if __name__ == "__main__":
     print("=== CUDA遗传算法测试 ===")
     
     from cuda_gpu_utils import get_cuda_gpu_manager
-    
+    from pathlib import Path
+
     # 初始化GPU管理器
     gpu_manager = get_cuda_gpu_manager()
+
+    # 定义输出目录和检查点目录
+    output_dir = Path("results")
+    checkpoint_dir = Path("results/checkpoints")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # 创建测试配置
     config = CudaGAConfig(
@@ -821,7 +827,7 @@ if __name__ == "__main__":
     
     # 运行测试
     start_time = time.time()
-    results = ga.evolve(features, labels)
+    results = ga.evolve(features, labels, output_dir=output_dir, checkpoint_dir=checkpoint_dir)
     test_time = time.time() - start_time
     
     print(f"\n测试完成!")
