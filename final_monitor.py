@@ -78,7 +78,11 @@ class FinalMonitor:
                         if line:
                             try:
                                 data.append(json.loads(line))
-                            except:
+                            except json.JSONDecodeError as e:
+                                print(f"JSON parsing error in log file: {e} on line: {line.strip()}")
+                                continue
+                            except Exception as e:
+                                print(f"Unexpected error parsing log file: {e} on line: {line.strip()}")
                                 continue
                 return data
             except:
@@ -145,7 +149,7 @@ class FinalMonitor:
         plt.tight_layout()
         
         self.ani = animation.FuncAnimation(self.fig, self.update_plots,
-                                         interval=2000, blit=False, 
+                                         interval=1000, blit=False, 
                                          cache_frame_data=False)
     
     def update_plots(self, frame):
