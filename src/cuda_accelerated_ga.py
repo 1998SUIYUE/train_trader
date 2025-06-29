@@ -240,8 +240,8 @@ class CudaGPUAcceleratedGA:
                     # 使用专门的CUDA回测优化器
                     if self.config.use_torch_scan:
                         with timer("backtest_v3", "backtest"):
-                            # 高精度模式
-                            fitness_scores = self.backtest_optimizer.vectorized_backtest_v3(
+                            # 高精度模式 (使用v4 scan-style JIT实现)
+                            fitness_scores = self.backtest_optimizer.vectorized_backtest_v4_scan_style(
                                 signals, labels, buy_thresholds, sell_thresholds, 
                                 max_positions, stop_losses, max_drawdowns
                             )
