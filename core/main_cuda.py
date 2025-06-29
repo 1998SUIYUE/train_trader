@@ -86,7 +86,7 @@ def main():
         
         # --- 适应度权重 (总和应为1.0) ---
         "sharpe_weight": 0.4,            # 夏普比率权重
-        "drawdown_weight": 0.3,          # 回撤惩罚权重
+        "drawdown_weight": 0.2,          # 回撤惩罚权重
         "stability_weight": 0.4,         # 交易稳定性权重
         
         # ==================== CUDA专用配置 ====================

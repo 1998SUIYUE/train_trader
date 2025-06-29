@@ -90,6 +90,17 @@ class FinalMonitor:
         return []
     
     def start_monitoring(self):
+        # Load initial data and populate deques
+        initial_data = self.load_data()
+        for item in initial_data:
+            self.generations.append(item.get('generation', 0))
+            self.best_fitness.append(item.get('best_fitness', 0))
+            self.mean_fitness.append(item.get('avg_fitness', item.get('mean_fitness', 0)))
+            self.generation_times.append(item.get('generation_time', 0))
+        
+        if self.log_file.exists():
+            self.last_file_size = self.log_file.stat().st_size
+
         if PLOTTING_AVAILABLE:
             self.setup_plots()
             self.monitor_thread = threading.Thread(target=self.monitor_file, daemon=True)
@@ -104,10 +115,21 @@ class FinalMonitor:
                 if self.log_file.exists():
                     current_size = self.log_file.stat().st_size
                     if current_size != self.last_file_size:
-                        data = self.load_data()
-                        if data:
-                            for item in data[len(self.generations):]:
-                                self.data_queue.put(item)
+                        # Read only new lines
+                        with open(self.log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                            f.seek(self.last_file_size) # Seek to the last read position
+                            new_lines = f.readlines()
+                            for line in new_lines:
+                                line = line.strip()
+                                if line:
+                                    try:
+                                        self.data_queue.put(json.loads(line))
+                                    except json.JSONDecodeError as e:
+                                        print(f"JSON parsing error in log file: {e} on line: {line.strip()}")
+                                        continue
+                                    except Exception as e:
+                                        print(f"Unexpected error parsing log file: {e} on line: {line.strip()}")
+                                        continue
                         self.last_file_size = current_size
                 time.sleep(1)
             except Exception as e:

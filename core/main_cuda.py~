@@ -72,7 +72,7 @@ def main():
         "generations": -1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
         "mutation_rate": 0.01,           # 变异率 (推荐: 0.005-0.02)
         "crossover_rate": 0.8,           # 交叉率 (推荐: 0.7-0.9)
-        "elite_ratio": 0.1,              # 精英保留比例 (推荐: 0.05-0.15)
+        "elite_ratio": 0.05,              # 精英保留比例 (推荐: 0.05-0.15)
         "early_stop_patience": 100,      # 无改进停止代数 (推荐: 50-200)
         "use_torch_scan": True,          # 使用torch.scan优化回测 (推荐: True)
         
