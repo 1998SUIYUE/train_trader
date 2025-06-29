@@ -699,11 +699,11 @@ class CudaGPUAcceleratedGA:
                 if hasattr(self, 'progress_monitor') and self.progress_monitor:
                     self.progress_monitor.update_generation(self.generation, stats)
                 
-                # 保存日志
-                if save_generation_results and generation_log_file and self.generation % generation_log_interval == 0:
-                    with open(generation_log_file, 'a', encoding='utf-8') as f:
-                        json.dump(stats, f, ensure_ascii=False)
-                        f.write('\n')
+                # 保存日志 (根据用户要求已禁用)
+                # if save_generation_results and generation_log_file and self.generation % generation_log_interval == 0:
+                #     with open(generation_log_file, 'a', encoding='utf-8') as f:
+                #         json.dump(stats, f, ensure_ascii=False)
+                #         f.write('\n')
                 
                 # 保存检查点
                 if save_checkpoints and checkpoint_dir and self.generation % checkpoint_interval == 0:
