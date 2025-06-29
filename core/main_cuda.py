@@ -352,7 +352,7 @@ def main():
                 train_labels,
                 save_checkpoints=ACTIVE_CONFIG["save_checkpoints"],
                 checkpoint_dir=checkpoint_dir,
-                checkpoint_interval=ACTIVE_CONFIG["checkpoint_interval"],
+                
                 save_generation_results=ACTIVE_CONFIG["save_generation_results"],
                 generation_log_file=generation_log_file,
                 generation_log_interval=ACTIVE_CONFIG["generation_log_interval"],
