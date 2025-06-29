@@ -783,7 +783,7 @@ class CudaGPUAcceleratedGA:
     
     def load_checkpoint(self, filepath: str) -> None:
         """加载检查点"""
-        checkpoint = torch.load(filepath, map_location='cpu', weights_only=True)
+        checkpoint = torch.load(filepath, map_location='cpu', weights_only=False)
         
         self.generation = checkpoint['generation']
         self.population = self.gpu_manager.to_gpu(checkpoint['population'])

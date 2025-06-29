@@ -10,6 +10,8 @@ import torch
 import numpy as np
 import sys
 import os
+from numpy._core.multiarray import _reconstruct as numpy_reconstruct
+from numpy import ndarray as numpy_ndarray
 
 # 添加src目录到路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -50,8 +52,8 @@ results_dir.mkdir(exist_ok=True)
 
 def main():
     """Main function - CUDA version integrated configuration and automated workflow"""
-    # Allowlist numpy._core.multiarray._reconstruct for torch.load with weights_only=True
-    torch.serialization.add_safe_globals([np._core.multiarray._reconstruct, np.ndarray])
+    # Allowlist numpy._core.multiarray._reconstruct and numpy.ndarray for torch.load with weights_only=True
+    torch.serialization.add_safe_globals([numpy_reconstruct, numpy_ndarray])
 
     # ==============================================================================
     # ======================= 在这里修改你的训练参数 ============================
