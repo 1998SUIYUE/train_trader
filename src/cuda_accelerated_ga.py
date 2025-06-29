@@ -244,13 +244,15 @@ class CudaGPUAcceleratedGA:
                             # 高精度模式 (使用v4 scan-style JIT实现)
                             fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self.backtest_optimizer.vectorized_backtest_v4_scan_style(
                                 signals, labels, buy_thresholds, sell_thresholds, 
-                                max_positions, stop_losses, max_drawdowns
+                                max_positions, stop_losses, max_drawdowns,
+                                self.config.sharpe_weight, self.config.drawdown_weight, self.config.stability_weight
                             )
                     else:
                         with timer("backtest_v2", "backtest"):
                             # 高速模式
                             fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self.backtest_optimizer.vectorized_backtest_v2(
-                                signals, labels, buy_thresholds, sell_thresholds, max_positions, trade_positions
+                                signals, labels, buy_thresholds, sell_thresholds, max_positions, trade_positions,
+                                self.config.sharpe_weight, self.config.drawdown_weight, self.config.stability_weight
                             )
                 else:
                     # 使用内置回测方法
@@ -258,13 +260,15 @@ class CudaGPUAcceleratedGA:
                         with timer("advanced_vectorized_backtest", "backtest"):
                             fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self._advanced_vectorized_backtest(
                                 signals, labels, buy_thresholds, sell_thresholds, 
-                                stop_losses, max_positions, max_drawdowns
+                                stop_losses, max_positions, max_drawdowns,
+                                self.config.sharpe_weight, self.config.drawdown_weight, self.config.stability_weight
                             )
                     else:
                         with timer("vectorized_backtest", "backtest"):
                             fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self._vectorized_backtest(
                                 signals, labels, buy_thresholds, sell_thresholds,
-                                stop_losses, max_positions, max_drawdowns
+                                stop_losses, max_positions, max_drawdowns,
+                                self.config.sharpe_weight, self.config.drawdown_weight, self.config.stability_weight
                             )
             
             return fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades
@@ -377,7 +381,8 @@ class CudaGPUAcceleratedGA:
     
     def _vectorized_backtest(self, signals: torch.Tensor, labels: torch.Tensor,
                            buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
+                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor,
+                           sharpe_weight: float, drawdown_weight: float, stability_weight: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """完全向量化的CUDA回测实现"""
         population_size, n_samples = signals.shape
         
@@ -425,15 +430,16 @@ class CudaGPUAcceleratedGA:
         normalized_activity = torch.clamp(trade_activity, 0.0, 1.0)
         
         # 综合适应度评分
-        fitness = (self.config.sharpe_weight * sharpe_ratios - 
-                  self.config.drawdown_weight * max_drawdowns -
-                  self.config.stability_weight * normalized_activity)
+        fitness = (sharpe_weight * sharpe_ratios - 
+                  drawdown_weight * max_drawdowns -
+                  stability_weight * normalized_activity)
         
-        return fitness
+        return fitness, sharpe_ratios, max_drawdowns, normalized_activity
     
     def _advanced_vectorized_backtest(self, signals: torch.Tensor, labels: torch.Tensor,
                                      buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                                     stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
+                                     stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor,
+                                     sharpe_weight: float, drawdown_weight: float, stability_weight: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """高级CUDA向量化回测，更精确的交易模拟（已修复止损逻辑）"""
         population_size, n_samples = signals.shape
         
@@ -521,14 +527,14 @@ class CudaGPUAcceleratedGA:
         normalized_frequency = torch.clamp(trade_frequency, 0.0, 1.0)
         
         # 综合适应度
-        fitness = (self.config.sharpe_weight * sharpe_ratios - 
-                  self.config.drawdown_weight * max_drawdowns_calc -
-                  self.config.stability_weight * normalized_frequency)
+        fitness = (sharpe_weight * sharpe_ratios - 
+                  drawdown_weight * max_drawdowns_calc -
+                  stability_weight * normalized_frequency)
         
         # 处理NaN和inf值，避免影响遗传算法进程
         fitness = torch.nan_to_num(fitness, nan=-10.0, posinf=0.0, neginf=-10.0)
         
-        return fitness
+        return fitness, sharpe_ratios, max_drawdowns_calc, normalized_frequency
     
     def selection(self) -> torch.Tensor:
         """选择操作 - 锦标赛选择"""

@@ -16,7 +16,8 @@ import torch.jit
 def _run_jit_backtest(signals: torch.Tensor, returns: torch.Tensor,
                         buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
                         max_positions: torch.Tensor, stop_losses: torch.Tensor, 
-                        max_drawdowns: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                        max_drawdowns: torch.Tensor,
+                        sharpe_weight: float, drawdown_weight: float, stability_weight: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     
     population_size, n_samples = signals.shape
     device = signals.device
@@ -92,7 +93,7 @@ def _run_jit_backtest(signals: torch.Tensor, returns: torch.Tensor,
     normalized_trades = torch.clamp(trade_counts / n_samples, 0, 1)
     
     # 综合适应度
-    fitness = 0.5 * sharpe_ratios - 0.3 * max_drawdowns_calc - 0.2 * normalized_trades
+    fitness = sharpe_weight * sharpe_ratios - drawdown_weight * max_drawdowns_calc - stability_weight * normalized_trades
     
     return torch.nan_to_num(fitness, nan=-10.0, posinf=0.0, neginf=-10.0), sharpe_ratios, max_drawdowns_calc, normalized_trades
 
@@ -158,7 +159,8 @@ class CudaBacktestOptimizer:
 
     def vectorized_backtest_v2(self, signals: torch.Tensor, returns: torch.Tensor,
                               buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                              max_positions: torch.Tensor) -> torch.Tensor:
+                              max_positions: torch.Tensor,
+                              sharpe_weight: float, drawdown_weight: float, stability_weight: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         buy_signals = (signals > buy_thresholds.unsqueeze(1)).float()
         sell_signals = (signals < sell_thresholds.unsqueeze(1)).float()
         positions = self._simulate_position_changes(buy_signals, sell_signals, max_positions)
@@ -166,7 +168,8 @@ class CudaBacktestOptimizer:
         sharpe_ratios = self._calculate_sharpe_ratios(portfolio_values)
         max_drawdowns = self._calculate_max_drawdowns(portfolio_values)
         trade_frequencies = self._calculate_trade_frequencies(positions)
-        return 0.6 * sharpe_ratios - 0.3 * max_drawdowns + 0.1 * trade_frequencies
+        fitness = sharpe_weight * sharpe_ratios - drawdown_weight * max_drawdowns - stability_weight * trade_frequencies
+        return fitness, sharpe_ratios, max_drawdowns, trade_frequencies
 
     def vectorized_backtest_v3(self, *args, **kwargs):
         """版本3：完整回测 (JIT for-loop)."""
