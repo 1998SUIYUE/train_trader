@@ -16,7 +16,7 @@ import torch.jit
 def _run_jit_backtest(signals: torch.Tensor, returns: torch.Tensor,
                         buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
                         max_positions: torch.Tensor, stop_losses: torch.Tensor, 
-                        max_drawdowns: torch.Tensor) -> torch.Tensor:
+                        max_drawdowns: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     
     population_size, n_samples = signals.shape
     device = signals.device
