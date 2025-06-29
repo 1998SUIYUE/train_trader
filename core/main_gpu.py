@@ -50,14 +50,13 @@ def main():
         "early_stop_patience": 50,       # 无改进停止代数 (推荐: 30-100)
         "use_torch_scan": True,          # 使用torch.scan优化回测 (推荐: True)
         
-        # --- 交易策略参数 (Sigmoid[0,1]区间) ---
-        "buy_threshold": 0.6,            # 买入阈值 (>0.5偏向买入, 推荐: 0.55-0.8)
-        "sell_threshold": 0.4,           # 卖出阈值 (<0.5偏向卖出, 推荐: 0.2-0.45)
-        
-        # --- 风险管理参数 ---
-        "stop_loss": 0.05,               # 止损比例 (推荐: 0.02-0.08)
-        "max_position": 0.2,             # 最大仓位 (推荐: 0.5-1.0)
-        "max_drawdown": 0.2,             # 最大回撤限制 (推荐: 0.1-0.3)
+        # --- 交易策略参数 (现在由遗传算法自动进化) ---
+        # 注意：以下参数现在作为基因自动进化，不需要手动设置
+        # - 买入阈值: 自动在 [0.55, 0.8] 范围内进化
+        # - 卖出阈值: 自动在 [0.2, 0.45] 范围内进化
+        # - 止损比例: 自动在 [0.02, 0.08] 范围内进化  
+        # - 最大仓位: 自动在 [0.5, 1.0] 范围内进化
+        # - 最大回撤: 自动在 [0.1, 0.25] 范围内进化
         
         # --- 适应度权重 (总和应为1.0) ---
         "sharpe_weight": 0.5,            # 夏普比率权重
@@ -97,30 +96,22 @@ def main():
         "checkpoint_interval": 25,
     }
     
-    # 🛡️ 保守交易策略
+    # 🛡️ 保守交易策略 - 注重风险控制
     CONSERVATIVE_CONFIG = {
         **TRAINING_CONFIG,
-        "buy_threshold": 0.7,            # 更严格的买入条件
-        "sell_threshold": 0.3,           # 更严格的卖出条件
-        "stop_loss": 0.03,               # 更严格的止损
-        "max_position": 0.6,             # 较小的仓位
-        "max_drawdown": 0.15,            # 较小的回撤容忍
+        # 注意：交易参数现在由基因自动进化，这里只调整适应度权重来偏向保守策略
         "sharpe_weight": 0.6,            # 更重视风险调整收益
-        "drawdown_weight": 0.4,
-        "stability_weight": 0.0,
+        "drawdown_weight": 0.4,          # 更重视回撤控制
+        "stability_weight": 0.0,         # 不考虑交易频率
     }
     
-    # ⚡ 激进交易策略
+    # ⚡ 激进交易策略 - 追求高收益
     AGGRESSIVE_CONFIG = {
         **TRAINING_CONFIG,
-        "buy_threshold": 0.55,           # 更宽松的买入条件
-        "sell_threshold": 0.45,          # 更宽松的卖出条件
-        "stop_loss": 0.08,               # 更宽松的止损
-        "max_position": 1.0,             # 满仓交易
-        "max_drawdown": 0.3,             # 更大的回撤容忍
-        "sharpe_weight": 0.3,            # 更重视收益
-        "drawdown_weight": 0.2,
-        "stability_weight": 0.5,         # 重视交易频率
+        # 注意：交易参数现在由基因自动进化，这里只调整适应度权重来偏向激进策略
+        "sharpe_weight": 0.3,            # 相对较少重视风险调整
+        "drawdown_weight": 0.2,          # 较少重视回撤控制
+        "stability_weight": 0.5,         # 重视交易频率和活跃度
     }
     
     # 🔄 长期训练配置
@@ -219,13 +210,7 @@ def main():
             crossover_rate=ACTIVE_CONFIG["crossover_rate"],
             elite_ratio=ACTIVE_CONFIG["elite_ratio"],
             feature_dim=train_features.shape[1],
-            # 交易策略参数
-            buy_threshold=ACTIVE_CONFIG["buy_threshold"],
-            sell_threshold=ACTIVE_CONFIG["sell_threshold"],
-            # 风险管理参数
-            stop_loss=ACTIVE_CONFIG["stop_loss"],
-            max_position=ACTIVE_CONFIG["max_position"],
-            max_drawdown=ACTIVE_CONFIG["max_drawdown"],
+            # 注意：交易策略和风险管理参数现在作为基因自动进化，不再从配置中读取
             # 适应度函数权重
             sharpe_weight=ACTIVE_CONFIG["sharpe_weight"],
             drawdown_weight=ACTIVE_CONFIG["drawdown_weight"],

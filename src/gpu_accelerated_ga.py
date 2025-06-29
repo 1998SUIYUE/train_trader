@@ -32,7 +32,7 @@ except ImportError:
 class WindowsGAConfig:
     """Windows遗传算法配置"""
     population_size: int = 500  # Windows上建议较小的种群
-    gene_length: int = 1400  # 只有1400个特征权重
+    gene_length: int = 1406  # 1400个特征权重 + 6个交易参数
     feature_dim: int = 1400
     mutation_rate: float = 0.01
     crossover_rate: float = 0.8
@@ -41,14 +41,12 @@ class WindowsGAConfig:
     max_generations: int = 500  # Windows上建议较少代数
     early_stop_patience: int = 30
     
-    # 交易策略参数
-    buy_threshold: float = 0.1
-    sell_threshold: float = 0.1
-    
-    # 风险管理参数
-    stop_loss: float = 0.05
-    max_position: float = 1.0
-    max_drawdown: float = 0.2
+    # 注意：交易策略和风险管理参数现在作为基因自动进化
+    # - 买入阈值: 自动在 [0.55, 0.8] 范围内进化
+    # - 卖出阈值: 自动在 [0.2, 0.45] 范围内进化  
+    # - 止损比例: 自动在 [0.02, 0.08] 范围内进化
+    # - 最大仓位: 自动在 [0.5, 1.0] 范围内进化
+    # - 最大回撤: 自动在 [0.1, 0.25] 范围内进化
     
     # 适应度函数权重
     sharpe_weight: float = 0.5
@@ -298,17 +296,28 @@ class WindowsGPUAcceleratedGA:
             torch.manual_seed(seed)
             np.random.seed(seed)
         
-        # 在GPU上直接生成随机种群 - 只有1400个特征权重
+        # 在GPU上直接生成随机种群 - 1400个特征权重 + 6个交易参数
         population = torch.randn(
             self.config.population_size, 
-            self.config.gene_length,  # 现在等于feature_dim (1400)
+            self.config.gene_length,  # 1406 = 1400特征 + 6参数
             device=self.device,
             dtype=torch.float32
-        ) * 0.1  # 小的初始权重
+        )
+        
+        # 初始化特征权重部分 (前1400个参数)
+        population[:, :self.config.feature_dim] *= 0.1  # 小的初始权重
+        
+        # 初始化交易参数 (后6个参数)
+        population[:, self.config.feature_dim] = torch.randn(self.config.population_size, device=self.device) * 0.1  # 偏置
+        population[:, self.config.feature_dim + 1] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.55  # 买入阈值 [0.55, 0.8]
+        population[:, self.config.feature_dim + 2] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.2   # 卖出阈值 [0.2, 0.45]
+        population[:, self.config.feature_dim + 3] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.06 + 0.02  # 止损 [0.02, 0.08]
+        population[:, self.config.feature_dim + 4] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.5 + 0.5   # 最大仓位 [0.5, 1.0]
+        population[:, self.config.feature_dim + 5] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.15 + 0.1  # 最大回撤 [0.1, 0.25]
         
         self.population = population
         print(f"种群初始化完成: {population.shape}")
-        print("使用纯特征权重模式 - 所有交易决策都基于1400个特征权重")
+        print("使用特征权重+交易参数模式 - 1400个特征权重 + 6个可进化的交易参数")
         return population
     
     def batch_fitness_evaluation(self, features: torch.Tensor, prices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -330,22 +339,29 @@ class WindowsGPUAcceleratedGA:
         if prices.device != self.device:
             prices = prices.to(self.device)
         
-        # 现在只有特征权重，所有决策都基于这1400个权重
-        weights = self.population
+        # 提取特征权重和交易参数
+        weights = self.population[:, :self.config.feature_dim]  # [pop_size, 1400]
+        biases = self.population[:, self.config.feature_dim]    # [pop_size]
+        buy_thresholds = self.population[:, self.config.feature_dim + 1]   # [pop_size]
+        sell_thresholds = self.population[:, self.config.feature_dim + 2]  # [pop_size]
+        stop_losses = self.population[:, self.config.feature_dim + 3]      # [pop_size]
+        max_positions = self.population[:, self.config.feature_dim + 4]    # [pop_size]
+        max_drawdowns = self.population[:, self.config.feature_dim + 5]    # [pop_size]
         
         # 批量计算决策分数 (GPU矩阵乘法)
-        raw_scores = torch.mm(weights, features.T)
+        raw_scores = torch.mm(weights, features.T) + biases.unsqueeze(1)
         
         # 使用Sigmoid激活函数将分数映射到[0,1]区间
         scores = torch.sigmoid(raw_scores)
 
-        # 从配置中获取交易策略参数 - 转换为GPU张量
-        buy_threshold = torch.tensor(getattr(self.config, 'buy_threshold', 0.6), device=self.device)
-        sell_threshold = torch.tensor(getattr(self.config, 'sell_threshold', 0.4), device=self.device)
+        # 使用基因中的交易策略参数 (每个个体都有自己的阈值)
+        # 扩展阈值维度以匹配scores
+        buy_thresholds_expanded = buy_thresholds.unsqueeze(1)  # [pop_size, 1]
+        sell_thresholds_expanded = sell_thresholds.unsqueeze(1)  # [pop_size, 1]
         
         # 向量化交易信号生成 (完全在GPU上)
-        buy_signals = scores > buy_threshold
-        sell_signals = scores < sell_threshold
+        buy_signals = scores > buy_thresholds_expanded
+        sell_signals = scores < sell_thresholds_expanded
         
         # 交易信号统计 (GPU计算)
         total_signals = torch.numel(scores)
@@ -358,18 +374,18 @@ class WindowsGPUAcceleratedGA:
             buy_ratio = (buy_count.float() / total_signals * 100).item()
             sell_ratio = (sell_count.float() / total_signals * 100).item()
             neutral_ratio = (neutral_count.float() / total_signals * 100).item()
+            avg_buy_threshold = torch.mean(buy_thresholds).item()
+            avg_sell_threshold = torch.mean(sell_thresholds).item()
             tqdm.write(f"  交易信号: 买入{buy_count.item()}次({buy_ratio:.1f}%), 卖出{sell_count.item()}次({sell_ratio:.1f}%), 中性{neutral_count.item()}次({neutral_ratio:.1f}%)")
-            tqdm.write(f"  阈值设置: 买入>{buy_threshold.item()}, 卖出<{sell_threshold.item()}, 中性区间[{sell_threshold.item()}, {buy_threshold.item()}]")
+            tqdm.write(f"  平均阈值: 买入>{avg_buy_threshold:.3f}, 卖出<{avg_sell_threshold:.3f}, 中性区间[{avg_sell_threshold:.3f}, {avg_buy_threshold:.3f}]")
         else:
             buy_ratio = (buy_count.float() / total_signals * 100).item()
             sell_ratio = (sell_count.float() / total_signals * 100).item()
             neutral_ratio = (neutral_count.float() / total_signals * 100).item()
             tqdm.write(f"  信号: 买入{buy_ratio:.1f}%, 卖出{sell_ratio:.1f}%, 中性{neutral_ratio:.1f}%")
         
-        # 从配置中获取风险管理参数
-        stop_loss = getattr(self.config, 'stop_loss', 0.05)
-        max_position = getattr(self.config, 'max_position', 1.0)
-        max_drawdown = getattr(self.config, 'max_drawdown', 0.2)
+        # 使用基因中的风险管理参数 (每个个体都有自己的参数)
+        # stop_losses, max_positions, max_drawdowns 已经从基因中提取
         
         # --- torch.scan优化的回测逻辑 ---
         pop_size, n_samples = buy_signals.shape
@@ -380,10 +396,10 @@ class WindowsGPUAcceleratedGA:
         price_changes[1:] = (prices[1:] - prices[:-1]) / prices[:-1]
 
         # 准备torch.scan的输入数据 [n_samples, pop_size, 6]
-        # 扩展风险管理参数到所有时间步和个体
-        max_drawdown_tensor = torch.full((n_samples, pop_size), max_drawdown, device=device)
-        stop_loss_tensor = torch.full((n_samples, pop_size), stop_loss, device=device)  
-        max_position_tensor = torch.full((n_samples, pop_size), max_position, device=device)
+        # 扩展风险管理参数到所有时间步 (每个个体有自己的参数)
+        max_drawdown_tensor = max_drawdowns.unsqueeze(0).expand(n_samples, -1)  # [n_samples, pop_size]
+        stop_loss_tensor = stop_losses.unsqueeze(0).expand(n_samples, -1)      # [n_samples, pop_size]
+        max_position_tensor = max_positions.unsqueeze(0).expand(n_samples, -1) # [n_samples, pop_size]
         
         # 组合输入张量 [n_samples, pop_size, 6]
         scan_inputs = torch.stack([
@@ -424,14 +440,14 @@ class WindowsGPUAcceleratedGA:
                 tqdm.write(f"  回退到传统循环方法")
                 final_carry = self._fallback_to_legacy_backtest(
                     buy_signals, sell_signals, price_changes, pop_size, n_samples, 
-                    max_drawdown, stop_loss, max_position, device
+                    max_drawdowns, stop_losses, max_positions, device
                 )
         else:
             # 使用传统循环方法
             tqdm.write(f"  使用传统循环回测 ({n_samples}步)")
             final_carry = self._fallback_to_legacy_backtest(
                 buy_signals, sell_signals, price_changes, pop_size, n_samples,
-                max_drawdown, stop_loss, max_position, device
+                max_drawdowns, stop_losses, max_positions, device
             )
         
         # 解包最终状态 [pop_size, 7]
@@ -575,7 +591,7 @@ class WindowsGPUAcceleratedGA:
     
     def _fallback_to_legacy_backtest(self, buy_signals: torch.Tensor, sell_signals: torch.Tensor, 
                                    price_changes: torch.Tensor, pop_size: int, n_samples: int,
-                                   max_drawdown: float, stop_loss: float, max_position: float, 
+                                   max_drawdowns: torch.Tensor, stop_losses: torch.Tensor, max_positions: torch.Tensor, 
                                    device: torch.device) -> torch.Tensor:
         """
         传统循环回测方法（作为torch.scan的备用方案）
@@ -601,20 +617,21 @@ class WindowsGPUAcceleratedGA:
             torch.zeros(pop_size, device=device)   # trade_counts
         )
         
+        # 由于每个个体有不同的参数，需要使用向量化方法而不是JIT
         # 批量处理以提高效率
         if n_samples > 1000:
             with tqdm(total=n_samples, desc=f"  第 {self.generation} 代传统回测", unit="步", leave=False) as pbar:
                 for i in range(n_samples):
-                    carry, _ = _legacy_step_function_jit(
-                        carry, xs[i], max_drawdown, stop_loss, max_position
+                    carry = self._vectorized_step_function(
+                        carry, xs[i], max_drawdowns, stop_losses, max_positions
                     )
                     if i % 100 == 0:
                         pbar.update(100)
                 pbar.update(n_samples % 100)
         else:
             for i in range(n_samples):
-                carry, _ = _legacy_step_function_jit(
-                    carry, xs[i], max_drawdown, stop_loss, max_position
+                carry = self._vectorized_step_function(
+                    carry, xs[i], max_drawdowns, stop_losses, max_positions
                 )
         
         # 转换为新格式 [pop_size, 7]

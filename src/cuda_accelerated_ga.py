@@ -38,14 +38,12 @@ class CudaGAConfig:
     elite_ratio: float = 0.1
     feature_dim: int = 1400
     
-    # 交易策略参数
-    buy_threshold: float = 0.6
-    sell_threshold: float = 0.4
-    
-    # 风险管理参数
-    stop_loss: float = 0.05
-    max_position: float = 1.0
-    max_drawdown: float = 0.2
+    # 注意：交易策略和风险管理参数现在作为基因自动进化
+    # - 买入阈值: 自动在 [0.55, 0.8] 范围内进化
+    # - 卖出阈值: 自动在 [0.2, 0.45] 范围内进化  
+    # - 止损比例: 自动在 [0.02, 0.08] 范围内进化
+    # - 最大仓位: 自动在 [0.5, 1.0] 范围内进化
+    # - 最大回撤: 自动在 [0.1, 0.25] 范围内进化
     
     # 适应度函数权重
     sharpe_weight: float = 0.5
@@ -124,8 +122,8 @@ class CudaGPUAcceleratedGA:
         print("初始化种群...")
         
         # 在GPU上创建种群
-        # 每个个体包含: [权重(feature_dim), 偏置, 买入阈值, 卖出阈值, 止损, 最大仓位]
-        individual_size = self.config.feature_dim + 5
+        # 每个个体包含: [权重(feature_dim), 偏置, 买入阈值, 卖出阈值, 止损, 最大仓位, 最大回撤]
+        individual_size = self.config.feature_dim + 6
         
         self.population = torch.randn(
             self.config.population_size, 
@@ -139,10 +137,11 @@ class CudaGPUAcceleratedGA:
         
         # 初始化其他参数
         self.population[:, self.config.feature_dim] = torch.randn(self.config.population_size, device=self.device) * 0.1  # 偏置
-        self.population[:, self.config.feature_dim + 1] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.3 + 0.5  # 买入阈值 [0.5, 0.8]
-        self.population[:, self.config.feature_dim + 2] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.3 + 0.2  # 卖出阈值 [0.2, 0.5]
-        self.population[:, self.config.feature_dim + 3] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.08 + 0.02  # 止损 [0.02, 0.1]
-        self.population[:, self.config.feature_dim + 4] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.8 + 0.2  # 最大仓位 [0.2, 1.0]
+        self.population[:, self.config.feature_dim + 1] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.55  # 买入阈值 [0.55, 0.8]
+        self.population[:, self.config.feature_dim + 2] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.25 + 0.2   # 卖出阈值 [0.2, 0.45]
+        self.population[:, self.config.feature_dim + 3] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.06 + 0.02  # 止损 [0.02, 0.08]
+        self.population[:, self.config.feature_dim + 4] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.5 + 0.5   # 最大仓位 [0.5, 1.0]
+        self.population[:, self.config.feature_dim + 5] = torch.sigmoid(torch.randn(self.config.population_size, device=self.device)) * 0.15 + 0.1  # 最大回撤 [0.1, 0.25]
         
         # 初始化适应度分数
         self.fitness_scores = torch.zeros(self.config.population_size, device=self.device)
@@ -170,6 +169,7 @@ class CudaGPUAcceleratedGA:
         sell_thresholds = self.population[:, self.config.feature_dim + 2]  # [pop_size]
         stop_losses = self.population[:, self.config.feature_dim + 3]      # [pop_size]
         max_positions = self.population[:, self.config.feature_dim + 4]    # [pop_size]
+        max_drawdowns = self.population[:, self.config.feature_dim + 5]    # [pop_size]
         
         # 计算预测信号 [pop_size, n_samples]
         signals = torch.sigmoid(torch.matmul(weights, features.T) + biases.unsqueeze(1))
@@ -181,31 +181,31 @@ class CudaGPUAcceleratedGA:
                 # 高精度模式
                 fitness_scores = self.backtest_optimizer.vectorized_backtest_v3(
                     signals, labels, buy_thresholds, sell_thresholds, 
-                    max_positions, stop_losses
+                    max_positions, stop_losses, max_drawdowns
                 )
             else:
                 # 高速模式
                 fitness_scores = self.backtest_optimizer.vectorized_backtest_v2(
-                    signals, labels, buy_thresholds, sell_thresholds, max_positions
+                    signals, labels, buy_thresholds, sell_thresholds, max_positions, max_drawdowns
                 )
         else:
             # 使用内置回测方法
             if self.config.use_torch_scan:
                 fitness_scores = self._advanced_vectorized_backtest(
                     signals, labels, buy_thresholds, sell_thresholds, 
-                    stop_losses, max_positions
+                    stop_losses, max_positions, max_drawdowns
                 )
             else:
                 fitness_scores = self._vectorized_backtest(
                     signals, labels, buy_thresholds, sell_thresholds,
-                    stop_losses, max_positions
+                    stop_losses, max_positions, max_drawdowns
                 )
         
         return fitness_scores
     
     def _backtest_with_scan(self, signals: torch.Tensor, labels: torch.Tensor,
                            buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                           stop_losses: torch.Tensor, max_positions: torch.Tensor) -> torch.Tensor:
+                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
         """使用torch.scan的优化回测"""
         population_size, n_samples = signals.shape
         
@@ -291,7 +291,7 @@ class CudaGPUAcceleratedGA:
         inputs = (signals.T.unsqueeze(-1), labels.unsqueeze(0).unsqueeze(-1))  # [n_samples, pop_size, 1]
         
         # torch.func.scan在某些PyTorch版本中不可用，直接使用优化的传统方法
-        return self._backtest_traditional(signals, labels, buy_thresholds, sell_thresholds, stop_losses, max_positions)
+        return self._backtest_traditional(signals, labels, buy_thresholds, sell_thresholds, stop_losses, max_positions, max_drawdowns)
         
         # 综合适应度
         fitness = (self.config.sharpe_weight * sharpe_ratios - 
@@ -302,16 +302,16 @@ class CudaGPUAcceleratedGA:
     
     def _backtest_traditional(self, signals: torch.Tensor, labels: torch.Tensor,
                              buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                             stop_losses: torch.Tensor, max_positions: torch.Tensor) -> torch.Tensor:
+                             stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
         """CUDA优化的向量化回测方法"""
         population_size, n_samples = signals.shape
         
         # 使用向量化操作进行批量回测，避免循环
-        return self._vectorized_backtest(signals, labels, buy_thresholds, sell_thresholds, stop_losses, max_positions)
+        return self._vectorized_backtest(signals, labels, buy_thresholds, sell_thresholds, stop_losses, max_positions, max_drawdowns)
     
     def _vectorized_backtest(self, signals: torch.Tensor, labels: torch.Tensor,
                            buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                           stop_losses: torch.Tensor, max_positions: torch.Tensor) -> torch.Tensor:
+                           stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
         """完全向量化的CUDA回测实现"""
         population_size, n_samples = signals.shape
         
@@ -320,6 +320,7 @@ class CudaGPUAcceleratedGA:
         sell_thresholds = sell_thresholds.unsqueeze(1)  # [pop_size, 1]
         stop_losses = stop_losses.unsqueeze(1)  # [pop_size, 1]
         max_positions = max_positions.unsqueeze(1)  # [pop_size, 1]
+        max_drawdowns = max_drawdowns.unsqueeze(1)  # [pop_size, 1]
         
         # 生成交易信号矩阵
         buy_signals = (signals > buy_thresholds).float()  # [pop_size, n_samples]
@@ -366,7 +367,7 @@ class CudaGPUAcceleratedGA:
     
     def _advanced_vectorized_backtest(self, signals: torch.Tensor, labels: torch.Tensor,
                                      buy_thresholds: torch.Tensor, sell_thresholds: torch.Tensor,
-                                     stop_losses: torch.Tensor, max_positions: torch.Tensor) -> torch.Tensor:
+                                     stop_losses: torch.Tensor, max_positions: torch.Tensor, max_drawdowns: torch.Tensor) -> torch.Tensor:
         """高级CUDA向量化回测，更精确的交易模拟"""
         population_size, n_samples = signals.shape
         
@@ -375,6 +376,7 @@ class CudaGPUAcceleratedGA:
         sell_thresholds = sell_thresholds.unsqueeze(1)
         stop_losses = stop_losses.unsqueeze(1)
         max_positions = max_positions.unsqueeze(1)
+        max_drawdowns = max_drawdowns.unsqueeze(1)
         
         # 生成交易决策矩阵
         buy_signals = (signals > buy_thresholds).float()
@@ -395,9 +397,16 @@ class CudaGPUAcceleratedGA:
             # 更新投资组合价值（考虑持仓收益）
             updated_values = current_values * (1 + current_positions * current_return)
             
-            # 交易决策
-            can_buy = (current_positions == 0) & (buy_signals[:, t] == 1)
-            can_sell = (current_positions > 0) & (sell_signals[:, t] == 1)
+            # 计算当前最高点和回撤
+            if t == 0:
+                current_max = updated_values
+            else:
+                current_max = torch.maximum(portfolio_values[:, :t+1].max(dim=1)[0], updated_values)
+            current_drawdown = (current_max - updated_values) / (current_max + 1e-8)
+            
+            # 交易决策（包含最大回撤限制）
+            can_buy = (current_positions == 0) & (buy_signals[:, t] == 1) & (current_drawdown < max_drawdowns.squeeze(1))
+            can_sell = (current_positions > 0) & (sell_signals[:, t] == 1) | (current_drawdown > max_drawdowns.squeeze(1))
             
             # 执行交易
             new_positions = current_positions.clone()
@@ -492,15 +501,16 @@ class CudaGPUAcceleratedGA:
         mutated[:, :self.config.feature_dim] += weight_mask * weight_noise
         
         # 其他参数变异
-        param_mask = torch.rand(population_size, 5, device=self.device) < self.config.mutation_rate
-        param_noise = torch.randn(population_size, 5, device=self.device) * 0.01
+        param_mask = torch.rand(population_size, 6, device=self.device) < self.config.mutation_rate
+        param_noise = torch.randn(population_size, 6, device=self.device) * 0.01
         
         # 确保参数在合理范围内
         mutated[:, self.config.feature_dim:] += param_mask * param_noise
-        mutated[:, self.config.feature_dim + 1] = torch.clamp(mutated[:, self.config.feature_dim + 1], 0.5, 0.8)  # 买入阈值
-        mutated[:, self.config.feature_dim + 2] = torch.clamp(mutated[:, self.config.feature_dim + 2], 0.2, 0.5)  # 卖出阈值
-        mutated[:, self.config.feature_dim + 3] = torch.clamp(mutated[:, self.config.feature_dim + 3], 0.02, 0.1)  # 止损
-        mutated[:, self.config.feature_dim + 4] = torch.clamp(mutated[:, self.config.feature_dim + 4], 0.2, 1.0)  # 最大仓位
+        mutated[:, self.config.feature_dim + 1] = torch.clamp(mutated[:, self.config.feature_dim + 1], 0.55, 0.8)  # 买入阈值
+        mutated[:, self.config.feature_dim + 2] = torch.clamp(mutated[:, self.config.feature_dim + 2], 0.2, 0.45)  # 卖出阈值
+        mutated[:, self.config.feature_dim + 3] = torch.clamp(mutated[:, self.config.feature_dim + 3], 0.02, 0.08)  # 止损
+        mutated[:, self.config.feature_dim + 4] = torch.clamp(mutated[:, self.config.feature_dim + 4], 0.5, 1.0)  # 最大仓位
+        mutated[:, self.config.feature_dim + 5] = torch.clamp(mutated[:, self.config.feature_dim + 5], 0.1, 0.25)  # 最大回撤
         
         return mutated
     
