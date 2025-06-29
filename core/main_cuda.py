@@ -51,7 +51,7 @@ results_dir.mkdir(exist_ok=True)
 def main():
     """Main function - CUDA version integrated configuration and automated workflow"""
     # Allowlist numpy._core.multiarray._reconstruct for torch.load with weights_only=True
-    torch.serialization.add_safe_globals([np._core.multiarray._reconstruct])
+    torch.serialization.add_safe_globals([np._core.multiarray._reconstruct, np.ndarray])
 
     # ==============================================================================
     # ======================= 在这里修改你的训练参数 ============================
