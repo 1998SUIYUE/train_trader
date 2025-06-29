@@ -23,6 +23,10 @@ class WindowsGPUManager:
         self.device = self._initialize_device()
         self.memory_pool = {}
         self._log_gpu_info()
+        
+        # 启用GPU优化
+        self.optimize_tensor_operations()
+        
         print("--- WindowsGPUManager初始化 ---")
         print(f"设备: {self.device}")
         print("-----------------------------")
@@ -89,7 +93,8 @@ class WindowsGPUManager:
         Returns:
             NumPy数组
         """
-        print(f"数据已转移到CPU: {tensor.shape}, {tensor.dtype}")
+        if tensor.device.type == 'cpu':
+            return tensor.detach().numpy()
         return tensor.detach().cpu().numpy()
     
     def get_memory_usage(self) -> Tuple[float, float]:
@@ -109,6 +114,29 @@ class WindowsGPUManager:
         gc.collect()
         if hasattr(torch.cuda, 'empty_cache'):
             torch.cuda.empty_cache()  # DirectML也支持此调用
+    
+    def optimize_tensor_operations(self):
+        """优化GPU张量操作设置"""
+        try:
+            # 启用GPU优化
+            if self.device.type == 'privateuseone':  # DirectML
+                torch.backends.directml.enabled = True
+                print("DirectML优化已启用")
+            
+            # 设置内存分配策略
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
+            
+        except Exception as e:
+            print(f"GPU优化设置失败: {e}")
+    
+    def batch_to_gpu(self, data_list: List[np.ndarray]) -> List[torch.Tensor]:
+        """批量将数据转移到GPU"""
+        return [self.to_gpu(data) for data in data_list]
+    
+    def batch_to_cpu(self, tensor_list: List[torch.Tensor]) -> List[np.ndarray]:
+        """批量将张量转移到CPU"""
+        return [self.to_cpu(tensor) for tensor in tensor_list]
     
     def create_memory_pool(self, name: str, size: Tuple[int, ...], dtype: torch.dtype = torch.float32):
         """

@@ -15,6 +15,18 @@ import torch.jit
 
 
 from gpu_utils import WindowsGPUManager, get_windows_gpu_manager
+try:
+    from gpu_performance_monitor import GPUPerformanceMonitor, PerformanceContext
+except ImportError:
+    # 如果性能监控模块不可用，创建一个空的上下文管理器
+    class PerformanceContext:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    GPUPerformanceMonitor = None
 
 @dataclass
 class WindowsGAConfig:
@@ -47,6 +59,7 @@ class WindowsGAConfig:
     batch_size: int = 500
     use_mixed_precision: bool = False  # DirectML混合精度支持有限
     memory_efficient: bool = True
+    use_torch_scan: bool = True  # 是否使用torch.scan优化交易回测
 
 
 @torch.jit.script
@@ -89,13 +102,83 @@ def _calculate_fitness_metrics_jit(sum_returns: torch.Tensor, sum_sq_returns: to
     return fitness, sharpe_ratios, sortino_ratios, max_drawdowns, equity
 
 @torch.jit.script
-def _step_function_jit(carry: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+def _trading_step_scan(carry: torch.Tensor, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    使用torch.scan优化的交易步进函数
+    
+    Args:
+        carry: 状态张量 [pop_size, 7] - [positions, equity, peak_equity, sum_returns, sum_sq_returns, downside_sum_sq_returns, trade_counts]
+        x: 输入张量 [pop_size, 6] - [buy_signal, sell_signal, price_change, max_drawdown, stop_loss, max_position]
+    
+    Returns:
+        (updated_carry, output)
+    """
+    # 解包状态 [pop_size, 7]
+    positions = carry[:, 0]
+    equity = carry[:, 1] 
+    peak_equity = carry[:, 2]
+    sum_returns = carry[:, 3]
+    sum_sq_returns = carry[:, 4]
+    downside_sum_sq_returns = carry[:, 5]
+    trade_counts = carry[:, 6]
+    
+    # 解包输入 [pop_size, 6]
+    buy_signal_t = x[:, 0]
+    sell_signal_t = x[:, 1]
+    price_change_t = x[:, 2]
+    max_drawdown = x[:, 3]
+    stop_loss = x[:, 4]
+    max_position = x[:, 5]
+
+    # --- 核心回测逻辑 (向量化) ---
+    period_return = positions * price_change_t
+    equity = equity + period_return
+
+    sum_returns = sum_returns + period_return
+    sum_sq_returns = sum_sq_returns + period_return.pow(2)
+    downside_sum_sq_returns = downside_sum_sq_returns + torch.where(
+        period_return < 0, period_return.pow(2), torch.zeros_like(period_return)
+    )
+
+    peak_equity = torch.maximum(peak_equity, equity)
+    current_drawdown = (peak_equity - equity) / (peak_equity + 1e-8)  # 避免除零
+    
+    # 风险管理
+    force_close = current_drawdown > max_drawdown
+    positions = torch.where(force_close, torch.zeros_like(positions), positions)
+    
+    stop_loss_trigger = (positions > 0) & (price_change_t < -stop_loss)
+    positions = torch.where(stop_loss_trigger, torch.zeros_like(positions), positions)
+    
+    # 交易信号处理
+    can_buy = (positions == 0) & (buy_signal_t > 0.5) & (~force_close)
+    new_position = torch.where(can_buy, max_position, positions)
+    
+    can_sell = (positions > 0) & (sell_signal_t > 0.5)
+    new_position = torch.where(can_sell, torch.zeros_like(positions), new_position)
+    
+    trade_counts = trade_counts + (new_position != positions).float()
+    positions = new_position
+
+    # 重新打包状态
+    new_carry = torch.stack([
+        positions, equity, peak_equity, sum_returns, 
+        sum_sq_returns, downside_sum_sq_returns, trade_counts
+    ], dim=1)
+    
+    # 输出当前状态用于调试（可选）
+    output = torch.stack([positions, equity, period_return], dim=1)
+    
+    return new_carry, output
+
+@torch.jit.script  
+def _legacy_step_function_jit(carry: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
                        x: torch.Tensor,
                        max_drawdown: float,
                        stop_loss: float,
                        max_position: float) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None]:
     """
-    JIT编译的回测步进函数
+    传统的JIT编译回测步进函数（保留作为备用）
     """
     # 解包状态
     positions, equity, peak_equity, sum_returns, sum_sq_returns, downside_sum_sq_returns, trade_counts = carry
@@ -256,27 +339,31 @@ class WindowsGPUAcceleratedGA:
         # 使用Sigmoid激活函数将分数映射到[0,1]区间
         scores = torch.sigmoid(raw_scores)
 
-        # 从配置中获取交易策略参数
-        buy_threshold = getattr(self.config, 'buy_threshold', 0.6)
-        sell_threshold = getattr(self.config, 'sell_threshold', 0.4)
+        # 从配置中获取交易策略参数 - 转换为GPU张量
+        buy_threshold = torch.tensor(getattr(self.config, 'buy_threshold', 0.6), device=self.device)
+        sell_threshold = torch.tensor(getattr(self.config, 'sell_threshold', 0.4), device=self.device)
         
-        # 向量化交易信号生成
+        # 向量化交易信号生成 (完全在GPU上)
         buy_signals = scores > buy_threshold
         sell_signals = scores < sell_threshold
         
-        # 交易信号统计
-        total_signals = scores.numel()
-        buy_count = torch.sum(buy_signals).item()
-        sell_count = torch.sum(sell_signals).item()
+        # 交易信号统计 (GPU计算)
+        total_signals = torch.numel(scores)
+        buy_count = torch.sum(buy_signals)
+        sell_count = torch.sum(sell_signals)
         neutral_count = total_signals - buy_count - sell_count
-        buy_ratio = buy_count / total_signals * 100
-        sell_ratio = sell_count / total_signals * 100
-        neutral_ratio = neutral_count / total_signals * 100
         
+        # 只在需要打印时才转换到CPU
         if self.generation % 10 == 0:
-            tqdm.write(f"  交易信号: 买入{buy_count}次({buy_ratio:.1f}%), 卖出{sell_count}次({sell_ratio:.1f}%), 中性{neutral_count}次({neutral_ratio:.1f}%)")
-            tqdm.write(f"  阈值设置: 买入>{buy_threshold}, 卖出<{sell_threshold}, 中性区间[{sell_threshold}, {buy_threshold}]")
+            buy_ratio = (buy_count.float() / total_signals * 100).item()
+            sell_ratio = (sell_count.float() / total_signals * 100).item()
+            neutral_ratio = (neutral_count.float() / total_signals * 100).item()
+            tqdm.write(f"  交易信号: 买入{buy_count.item()}次({buy_ratio:.1f}%), 卖出{sell_count.item()}次({sell_ratio:.1f}%), 中性{neutral_count.item()}次({neutral_ratio:.1f}%)")
+            tqdm.write(f"  阈值设置: 买入>{buy_threshold.item()}, 卖出<{sell_threshold.item()}, 中性区间[{sell_threshold.item()}, {buy_threshold.item()}]")
         else:
+            buy_ratio = (buy_count.float() / total_signals * 100).item()
+            sell_ratio = (sell_count.float() / total_signals * 100).item()
+            neutral_ratio = (neutral_count.float() / total_signals * 100).item()
             tqdm.write(f"  信号: 买入{buy_ratio:.1f}%, 卖出{sell_ratio:.1f}%, 中性{neutral_ratio:.1f}%")
         
         # 从配置中获取风险管理参数
@@ -284,42 +371,79 @@ class WindowsGPUAcceleratedGA:
         max_position = getattr(self.config, 'max_position', 1.0)
         max_drawdown = getattr(self.config, 'max_drawdown', 0.2)
         
-        # --- JIT回测逻辑 ---
+        # --- torch.scan优化的回测逻辑 ---
         pop_size, n_samples = buy_signals.shape
         device = self.device
 
-        price_changes = (prices[1:] - prices[:-1]) / prices[:-1]
-        price_changes = torch.cat([torch.zeros(1, device=device), price_changes])
+        # 在GPU上计算价格变化
+        price_changes = torch.zeros_like(prices)
+        price_changes[1:] = (prices[1:] - prices[:-1]) / prices[:-1]
 
-        expanded_price_changes = price_changes.unsqueeze(0).expand(pop_size, -1)
-        xs = torch.stack([
-            buy_signals.float(),
-            sell_signals.float(),
-            expanded_price_changes
-        ], dim=2).permute(1, 0, 2)
-
-        init_carry = (
-            torch.zeros(pop_size, device=device),
-            torch.ones(pop_size, device=device),
-            torch.ones(pop_size, device=device),
-            torch.zeros(pop_size, device=device),
-            torch.zeros(pop_size, device=device),
-            torch.zeros(pop_size, device=device),
-            torch.zeros(pop_size, device=device)
-        )
-
-        carry = init_carry
-        # 为每个世代的回测添加内部进度条
-        with tqdm(total=n_samples, desc=f"  第 {self.generation} 代回测", unit="步", leave=False) as pbar:
-            for i in range(n_samples):
-                carry, _ = _step_function_jit(
-                    carry, xs[i], max_drawdown, stop_loss, max_position
-                )
-                pbar.update(1)
+        # 准备torch.scan的输入数据 [n_samples, pop_size, 6]
+        # 扩展风险管理参数到所有时间步和个体
+        max_drawdown_tensor = torch.full((n_samples, pop_size), max_drawdown, device=device)
+        stop_loss_tensor = torch.full((n_samples, pop_size), stop_loss, device=device)  
+        max_position_tensor = torch.full((n_samples, pop_size), max_position, device=device)
         
-        (_, final_equity, final_peak_equity, final_sum_returns,
-         final_sum_sq_returns, final_downside_sum_sq_returns, final_trade_counts) = carry
+        # 组合输入张量 [n_samples, pop_size, 6]
+        scan_inputs = torch.stack([
+            buy_signals.float().T,           # [n_samples, pop_size] - 买入信号
+            sell_signals.float().T,          # [n_samples, pop_size] - 卖出信号  
+            price_changes.unsqueeze(1).expand(-1, pop_size),  # [n_samples, pop_size] - 价格变化
+            max_drawdown_tensor,             # [n_samples, pop_size] - 最大回撤限制
+            stop_loss_tensor,                # [n_samples, pop_size] - 止损比例
+            max_position_tensor              # [n_samples, pop_size] - 最大仓位
+        ], dim=2)
 
+        # 初始化状态张量 [pop_size, 7]
+        init_carry = torch.stack([
+            torch.zeros(pop_size, device=device),  # positions
+            torch.ones(pop_size, device=device),   # equity  
+            torch.ones(pop_size, device=device),   # peak_equity
+            torch.zeros(pop_size, device=device),  # sum_returns
+            torch.zeros(pop_size, device=device),  # sum_sq_returns
+            torch.zeros(pop_size, device=device),  # downside_sum_sq_returns
+            torch.zeros(pop_size, device=device)   # trade_counts
+        ], dim=1)
+
+        # 根据配置选择回测方法
+        if self.config.use_torch_scan:
+            # 使用torch.scan进行高效的GPU并行回测
+            tqdm.write(f"  使用torch.scan进行GPU并行回测 ({n_samples}步)")
+            start_scan_time = time.time()
+            
+            try:
+                # torch.scan: 高效的GPU并行扫描操作
+                final_carry, scan_outputs = torch.scan(_trading_step_scan, init_carry, scan_inputs)
+                scan_time = time.time() - start_scan_time
+                tqdm.write(f"  torch.scan回测完成，用时: {scan_time:.3f}秒")
+                
+            except Exception as e:
+                # 如果torch.scan失败，回退到传统方法
+                tqdm.write(f"  torch.scan失败: {e}")
+                tqdm.write(f"  回退到传统循环方法")
+                final_carry = self._fallback_to_legacy_backtest(
+                    buy_signals, sell_signals, price_changes, pop_size, n_samples, 
+                    max_drawdown, stop_loss, max_position, device
+                )
+        else:
+            # 使用传统循环方法
+            tqdm.write(f"  使用传统循环回测 ({n_samples}步)")
+            final_carry = self._fallback_to_legacy_backtest(
+                buy_signals, sell_signals, price_changes, pop_size, n_samples,
+                max_drawdown, stop_loss, max_position, device
+            )
+        
+        # 解包最终状态 [pop_size, 7]
+        final_positions = final_carry[:, 0]
+        final_equity = final_carry[:, 1]
+        final_peak_equity = final_carry[:, 2] 
+        final_sum_returns = final_carry[:, 3]
+        final_sum_sq_returns = final_carry[:, 4]
+        final_downside_sum_sq_returns = final_carry[:, 5]
+        final_trade_counts = final_carry[:, 6]
+
+        # GPU上计算适应度指标
         fitness_scores_tuple = _calculate_fitness_metrics_jit(
             final_sum_returns, final_sum_sq_returns, final_downside_sum_sq_returns,
             final_trade_counts, n_samples, final_equity, final_peak_equity,
@@ -367,7 +491,7 @@ class WindowsGPUAcceleratedGA:
     
     def crossover_and_mutation(self, parent_indices: torch.Tensor) -> torch.Tensor:
         """
-        交叉和变异操作 (Windows GPU加速)
+        交叉和变异操作 (GPU优化版本)
         
         Args:
             parent_indices: 父代个体索引
@@ -380,60 +504,122 @@ class WindowsGPUAcceleratedGA:
         pop_size = self.config.population_size
         new_population = torch.zeros_like(self.population)
         
-        # 精英保留
+        # 精英保留 (GPU操作)
         elite_count = int(pop_size * self.config.elite_ratio)
-        # 确保至少保留一个个体，避免k=0的边界情况
         if elite_count == 0 and pop_size > 0:
             elite_count = 1
         
         elite_indices = torch.topk(self.fitness_scores, elite_count).indices
         new_population[:elite_count] = self.population[elite_indices]
         
-        # 交叉操作 (Windows优化：分批处理)
-        batch_size = self.config.batch_size
-        for i in range(elite_count, pop_size, batch_size):
-            end_idx = min(i + batch_size, pop_size)
-            batch_size_actual = end_idx - i
+        # GPU优化的向量化交叉操作
+        remaining_size = pop_size - elite_count
+        if remaining_size > 0:
+            # 确保偶数个个体进行交叉
+            if remaining_size % 2 == 1:
+                remaining_size -= 1
             
-            # 处理当前批次
-            for j in range(0, batch_size_actual, 2):
-                idx1, idx2 = i + j, min(i + j + 1, pop_size - 1)
-                
-                parent1_idx = parent_indices[idx1]
-                parent2_idx = parent_indices[idx2]
-                
-                if torch.rand(1, device=self.device) < self.config.crossover_rate:
-                    # 均匀交叉
-                    mask = torch.rand(self.config.gene_length, device=self.device) < 0.5
-                    
-                    child1 = torch.where(mask, 
-                                       self.population[parent1_idx], 
-                                       self.population[parent2_idx])
-                    child2 = torch.where(mask, 
-                                       self.population[parent2_idx], 
-                                       self.population[parent1_idx])
-                else:
-                    child1 = self.population[parent1_idx].clone()
-                    child2 = self.population[parent2_idx].clone()
-                
-                new_population[idx1] = child1
-                if idx2 < pop_size:
-                    new_population[idx2] = child2
+            # 向量化交叉操作
+            parent1_indices = parent_indices[elite_count:elite_count + remaining_size:2]
+            parent2_indices = parent_indices[elite_count + 1:elite_count + remaining_size:2]
             
-            # Windows优化：定期清理内存
-            if i % (batch_size * 4) == 0:
-                self.gpu_manager.clear_cache()
+            # 获取父代基因
+            parents1 = self.population[parent1_indices]  # (n_pairs, gene_length)
+            parents2 = self.population[parent2_indices]  # (n_pairs, gene_length)
+            
+            # 生成交叉掩码 (GPU向量化)
+            n_pairs = len(parents1)
+            crossover_mask = torch.rand(n_pairs, 1, device=self.device) < self.config.crossover_rate
+            gene_mask = torch.rand(n_pairs, self.config.gene_length, device=self.device) < 0.5
+            
+            # 向量化交叉
+            children1 = torch.where(
+                crossover_mask & gene_mask, 
+                parents1, 
+                torch.where(crossover_mask, parents2, parents1)
+            )
+            children2 = torch.where(
+                crossover_mask & gene_mask, 
+                parents2, 
+                torch.where(crossover_mask, parents1, parents2)
+            )
+            
+            # 将子代放入新种群
+            new_population[elite_count:elite_count + n_pairs] = children1
+            new_population[elite_count + n_pairs:elite_count + 2 * n_pairs] = children2
+            
+            # 处理剩余的奇数个体
+            if elite_count + 2 * n_pairs < pop_size:
+                remaining_idx = elite_count + 2 * n_pairs
+                new_population[remaining_idx] = self.population[parent_indices[remaining_idx]].clone()
         
-        # 变异操作
+        # GPU向量化变异操作
         mutation_mask = torch.rand(pop_size, self.config.gene_length, device=self.device) < self.config.mutation_rate
         mutation_values = torch.randn(pop_size, self.config.gene_length, device=self.device) * 0.01
         
-        new_population[elite_count:] += mutation_mask[elite_count:] * mutation_values[elite_count:]
+        # 只对非精英个体进行变异
+        elite_mask = torch.zeros(pop_size, dtype=torch.bool, device=self.device)
+        elite_mask[:elite_count] = True
+        mutation_mask[elite_mask] = False
+        
+        new_population += mutation_mask * mutation_values
         
         self.population = new_population
         self.stats['genetic_op_times'].append(time.time() - start_time)
         
+        # GPU内存优化：定期清理
+        if self.generation % 10 == 0:
+            self.gpu_manager.clear_cache()
+        
         return new_population
+    
+    def _fallback_to_legacy_backtest(self, buy_signals: torch.Tensor, sell_signals: torch.Tensor, 
+                                   price_changes: torch.Tensor, pop_size: int, n_samples: int,
+                                   max_drawdown: float, stop_loss: float, max_position: float, 
+                                   device: torch.device) -> torch.Tensor:
+        """
+        传统循环回测方法（作为torch.scan的备用方案）
+        
+        Returns:
+            final_carry: [pop_size, 7] 最终状态张量
+        """
+        # 重新组织数据为传统格式
+        xs = torch.stack([
+            buy_signals.float(),
+            sell_signals.float(), 
+            price_changes.unsqueeze(0).expand(pop_size, -1)
+        ], dim=2).permute(1, 0, 2)
+        
+        # 传统循环方法
+        carry = (
+            torch.zeros(pop_size, device=device),  # positions
+            torch.ones(pop_size, device=device),   # equity
+            torch.ones(pop_size, device=device),   # peak_equity
+            torch.zeros(pop_size, device=device),  # sum_returns
+            torch.zeros(pop_size, device=device),  # sum_sq_returns
+            torch.zeros(pop_size, device=device),  # downside_sum_sq_returns
+            torch.zeros(pop_size, device=device)   # trade_counts
+        )
+        
+        # 批量处理以提高效率
+        if n_samples > 1000:
+            with tqdm(total=n_samples, desc=f"  第 {self.generation} 代传统回测", unit="步", leave=False) as pbar:
+                for i in range(n_samples):
+                    carry, _ = _legacy_step_function_jit(
+                        carry, xs[i], max_drawdown, stop_loss, max_position
+                    )
+                    if i % 100 == 0:
+                        pbar.update(100)
+                pbar.update(n_samples % 100)
+        else:
+            for i in range(n_samples):
+                carry, _ = _legacy_step_function_jit(
+                    carry, xs[i], max_drawdown, stop_loss, max_position
+                )
+        
+        # 转换为新格式 [pop_size, 7]
+        final_carry = torch.stack(carry, dim=1)
+        return final_carry
     
     def evolve_one_generation(self, features: torch.Tensor, prices: torch.Tensor) -> Dict[str, float]:
         """

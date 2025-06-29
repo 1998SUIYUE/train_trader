@@ -11,8 +11,10 @@ from pathlib import Path
 
 try:
     from .gpu_utils import WindowsGPUManager, get_windows_gpu_manager
+    from .cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager
 except ImportError:
     from gpu_utils import WindowsGPUManager, get_windows_gpu_manager
+    from cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager
 
 try:
     from .normalization_strategies import DataNormalizer
@@ -22,18 +24,34 @@ except ImportError:
 class GPUDataProcessor:
     """GPU加速数据处理器"""
     
-    def __init__(self, gpu_manager: Optional[WindowsGPUManager] = None, 
+    def __init__(self, gpu_manager=None, 
                  normalization_method: str = 'relative',
                  window_size: int = 350):
         """
         初始化数据处理器
         
         Args:
-            gpu_manager: GPU管理器
+            gpu_manager: GPU管理器 (WindowsGPUManager 或 CudaGPUManager)
             normalization_method: 归一化方法
             window_size: 滑动窗口大小
         """
-        self.gpu_manager = gpu_manager or get_windows_gpu_manager()
+        # 自动选择GPU管理器
+        if gpu_manager is None:
+            # 优先尝试CUDA，如果不可用则使用DirectML
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    self.gpu_manager = get_cuda_gpu_manager()
+                    print("自动选择CUDA GPU管理器")
+                else:
+                    self.gpu_manager = get_windows_gpu_manager()
+                    print("自动选择DirectML GPU管理器")
+            except:
+                self.gpu_manager = get_windows_gpu_manager()
+                print("默认使用DirectML GPU管理器")
+        else:
+            self.gpu_manager = gpu_manager
+        
         self.device = self.gpu_manager.device
         self.normalizer = DataNormalizer(normalization_method, window_size)
         self.window_size = window_size
@@ -247,7 +265,7 @@ class GPUDataProcessor:
     def _extract_batch_features_gpu(self, ohlc_data: np.ndarray, 
                                   start_idx: int, end_idx: int) -> torch.Tensor:
         """
-        批量提取特征 (GPU加速)
+        批量提取特征 (GPU加速优化版本)
         
         Args:
             ohlc_data: OHLC数据
@@ -258,57 +276,68 @@ class GPUDataProcessor:
             批次特征张量
         """
         batch_size = end_idx - start_idx
-        batch_features = torch.zeros(
-            batch_size, self.normalizer.feature_dim,
-            device=self.device, dtype=torch.float32
-        )
         
-        # 使用滑动窗口视图提取窗口
-        # 创建滑动窗口：对每个时间步，提取window_size长度的OHLC数据
-        batch_windows = []
+        # GPU优化：直接在GPU上创建滑动窗口
+        # 先将整个OHLC数据转移到GPU
+        ohlc_gpu = self.gpu_manager.to_gpu(ohlc_data)
+        
+        # 使用GPU张量操作创建滑动窗口
+        windows_list = []
         for i in range(start_idx, end_idx):
             window_start = i
             window_end = i + self.window_size
-            window = ohlc_data[window_start:window_end]  # shape: (window_size, 4)
-            batch_windows.append(window)
+            window = ohlc_gpu[window_start:window_end]  # 直接在GPU上切片
+            windows_list.append(window)
         
-        windows = np.array(batch_windows)  # shape: (batch_size, window_size, 4)
-        
-        # 转移到GPU进行归一化
-        windows_gpu = self.gpu_manager.to_gpu(windows)
+        # 在GPU上堆叠窗口
+        windows_gpu = torch.stack(windows_list, dim=0)  # shape: (batch_size, window_size, 4)
         
         # GPU向量化归一化
         if self.normalizer.method == 'relative':
-            # 相对价格归一化
+            # 相对价格归一化 (完全在GPU上)
             base_prices = windows_gpu[:, 0, 3:4]  # 首个收盘价 (batch_size, 1)
             normalized_windows = windows_gpu / base_prices.unsqueeze(-1)
             
-            print("\n--- 归一化数据展示 (相对价格) ---")
-            print(f"归一化后形状: {normalized_windows.shape}")
-            if normalized_windows.shape[0] > 0:
-                print(f"第一个窗口的归一化数据 (前5行):\n{self.gpu_manager.to_cpu(normalized_windows[0, :5, :])}")
-            print("-------------------------------------\n")
+            # 只在第一批次时显示归一化信息
+            if start_idx == 0:
+                print("\n--- 归一化数据展示 (相对价格) ---")
+                print(f"归一化后形状: {normalized_windows.shape}")
+                if normalized_windows.shape[0] > 0:
+                    sample_data = self.gpu_manager.to_cpu(normalized_windows[0, :5, :])
+                    print(f"第一个窗口的归一化数据 (前5行):\n{sample_data}")
+                print("-------------------------------------\n")
 
             batch_features = normalized_windows.reshape(batch_size, -1)
         
         elif self.normalizer.method == 'rolling':
-            # 滚动标准化
+            # 滚动标准化 (GPU向量化)
             mean_vals = torch.mean(windows_gpu, dim=1, keepdim=True)
             std_vals = torch.std(windows_gpu, dim=1, keepdim=True)
-            # 避免除以零
-            std_vals[std_vals == 0] = 1e-8
+            
+            # GPU上避免除以零
+            std_vals = torch.clamp(std_vals, min=1e-8)
             normalized_windows = (windows_gpu - mean_vals) / std_vals
-            # 清理潜在的NaN或inf值
+            
+            # GPU上清理NaN和inf值
             normalized_windows = torch.nan_to_num(normalized_windows, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-
+            
+            # 只在第一批次时显示归一化信息
+            if start_idx == 0:
+                print("\n--- 归一化数据展示 (滚动标准化) ---")
+                print(f"归一化后形状: {normalized_windows.shape}")
+                if normalized_windows.shape[0] > 0:
+                    sample_data = self.gpu_manager.to_cpu(normalized_windows[0, :5, :])
+                    print(f"第一个窗口的归一化数据 (前5行):\n{sample_data}")
+                print("-------------------------------------\n")
 
             batch_features = normalized_windows.reshape(batch_size, -1)
         
         elif self.normalizer.method == 'hybrid':
             # 混合归一化 (包含技术指标)
             batch_features = self._compute_hybrid_features_gpu(windows_gpu)
+        
+        else:
+            raise ValueError(f"不支持的归一化方法: {self.normalizer.method}")
         
         return batch_features
     
@@ -482,17 +511,13 @@ class GPUDataProcessor:
         # 提取特征
         features, prices = self.extract_features_gpu()
         
-        # 计算标签（下一期收益率）
-        price_array = self.gpu_manager.to_cpu(prices)
-        # Ensure price_array is a numpy array for subsequent operations
-        if torch.is_tensor(price_array):
-            price_array = price_array.numpy()
-        returns = np.zeros(len(price_array))
-        returns[1:] = (price_array[1:] - price_array[:-1]) / price_array[:-1]
+        # GPU优化：直接在GPU上计算标签（下一期收益率）
+        returns = torch.zeros_like(prices)
+        returns[1:] = (prices[1:] - prices[:-1]) / prices[:-1]
         
         # 移除最后一个特征样本（因为没有对应的下一期收益率）
         features = features[:-1]
-        labels = self.gpu_manager.to_gpu(returns[1:])  # 对应的收益率标签
+        labels = returns[1:]  # 对应的收益率标签，已经在GPU上
         
         print(f"最终特征形状: {features.shape}")
         print(f"最终标签形状: {labels.shape}")

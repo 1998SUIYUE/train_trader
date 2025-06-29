@@ -1,13 +1,12 @@
 """
-GPU版遗传算法交易员训练主程序
-使用DirectML后端支持AMD GPU
+CUDA版遗传算法交易员训练主程序
+支持NVIDIA GPU CUDA加速
 """
 
 import time
 from pathlib import Path
 import json
 import torch
-import torch_directml
 import numpy as np
 import sys
 import os
@@ -15,8 +14,8 @@ import os
 # 添加src目录到路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from gpu_utils import WindowsGPUManager, get_windows_gpu_manager
-from gpu_accelerated_ga import WindowsGPUAcceleratedGA, WindowsGAConfig
+from cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager, check_cuda_compatibility, optimize_cuda_settings
+from cuda_accelerated_ga import CudaGPUAcceleratedGA, CudaGAConfig
 from data_processor import GPUDataProcessor
 
 # 确保results目录存在
@@ -24,11 +23,8 @@ results_dir = Path('../results')
 results_dir.mkdir(exist_ok=True)
 
 
-
-
-
 def main():
-    """主函数 - 集成配置与自动化流程"""
+    """主函数 - CUDA版本集成配置与自动化流程"""
 
     # ==============================================================================
     # ======================= 在这里修改你的训练参数 ============================
@@ -40,14 +36,15 @@ def main():
         "data_directory": "../data",     # 数据文件目录
         "window_size": 350,             # 特征工程窗口大小
         "normalization": "rolling",     # 归一化方法: 'rolling', 'minmax_local', 'hybrid'
-        "batch_size":500,
+        "batch_size": 1000,             # CUDA上可以使用更大的批次
+        
         # --- 遗传算法参数 ---
-        "population_size": 500,          # 种群大小 (推荐: 500-2000)
-        "generations": -1,              # 训练代数 (-1=无限训练, 推荐: 50-500)
+        "population_size": 1000,         # 种群大小 (CUDA上推荐: 1000-5000)
+        "generations": -1,              # 训练代数 (-1=无限训练, 推荐: 100-1000)
         "mutation_rate": 0.01,           # 变异率 (推荐: 0.005-0.02)
         "crossover_rate": 0.8,           # 交叉率 (推荐: 0.7-0.9)
         "elite_ratio": 0.1,              # 精英保留比例 (推荐: 0.05-0.15)
-        "early_stop_patience": 50,       # 无改进停止代数 (推荐: 30-100)
+        "early_stop_patience": 100,      # 无改进停止代数 (推荐: 50-200)
         "use_torch_scan": True,          # 使用torch.scan优化回测 (推荐: True)
         
         # --- 交易策略参数 (Sigmoid[0,1]区间) ---
@@ -56,7 +53,7 @@ def main():
         
         # --- 风险管理参数 ---
         "stop_loss": 0.05,               # 止损比例 (推荐: 0.02-0.08)
-        "max_position": 0.2,             # 最大仓位 (推荐: 0.5-1.0)
+        "max_position": 0.8,             # 最大仓位 (推荐: 0.5-1.0)
         "max_drawdown": 0.2,             # 最大回撤限制 (推荐: 0.1-0.3)
         
         # --- 适应度权重 (总和应为1.0) ---
@@ -64,12 +61,19 @@ def main():
         "drawdown_weight": 0.3,          # 回撤惩罚权重
         "stability_weight": 0.2,         # 交易稳定性权重
         
+        # ==================== CUDA专用配置 ====================
+        
+        # --- GPU设置 ---
+        "gpu_device_id": 0,              # GPU设备ID (0为第一个GPU)
+        "gpu_memory_fraction": 0.9,      # GPU内存使用比例 (0.0-1.0)
+        "mixed_precision": False,        # 是否使用混合精度训练 (实验性)
+        
         # ==================== 系统配置 ====================
         
         # --- 保存设置 ---
         "results_dir": "../results",     # 结果输出目录
         "save_checkpoints": True,        # 是否保存检查点
-        "checkpoint_interval": 300,       # 检查点保存间隔
+        "checkpoint_interval": 100,      # 检查点保存间隔 (CUDA上可以更长)
         "auto_save_best": True,          # 是否自动保存最佳个体
         
         # --- 日志设置 ---
@@ -81,23 +85,37 @@ def main():
     # ======================== 预设配置模板 (可选择使用) =========================
     # ==============================================================================
     
-    # 🚀 快速测试配置
+    # 🚀 快速测试配置 (CUDA版)
     QUICK_TEST_CONFIG = {
         **TRAINING_CONFIG,
-        "population_size": 50,
-        "generations": 10,
-        "checkpoint_interval": 5,
+        "population_size": 200,
+        "generations": 20,
+        "checkpoint_interval": 10,
+        "batch_size": 500,
     }
     
-    # 💪 高性能配置 (适合高端显卡)
+    # 💪 高性能配置 (适合高端NVIDIA GPU)
     HIGH_PERFORMANCE_CONFIG = {
         **TRAINING_CONFIG,
-        "population_size": 1500,
-        "generations": 200,
-        "checkpoint_interval": 25,
+        "population_size": 3000,
+        "generations": 500,
+        "checkpoint_interval": 50,
+        "batch_size": 2000,
+        "early_stop_patience": 150,
     }
     
-    # 🛡️ 保守交易策略
+    # 🔥 极限性能配置 (RTX 4090/A100等)
+    EXTREME_PERFORMANCE_CONFIG = {
+        **TRAINING_CONFIG,
+        "population_size": 5000,
+        "generations": 1000,
+        "checkpoint_interval": 25,
+        "batch_size": 3000,
+        "early_stop_patience": 200,
+        "gpu_memory_fraction": 0.95,
+    }
+    
+    # 🛡️ 保守交易策略 (CUDA版)
     CONSERVATIVE_CONFIG = {
         **TRAINING_CONFIG,
         "buy_threshold": 0.7,            # 更严格的买入条件
@@ -108,9 +126,10 @@ def main():
         "sharpe_weight": 0.6,            # 更重视风险调整收益
         "drawdown_weight": 0.4,
         "stability_weight": 0.0,
+        "population_size": 1500,         # 更大的种群以提高稳定性
     }
     
-    # ⚡ 激进交易策略
+    # ⚡ 激进交易策略 (CUDA版)
     AGGRESSIVE_CONFIG = {
         **TRAINING_CONFIG,
         "buy_threshold": 0.55,           # 更宽松的买入条件
@@ -121,14 +140,26 @@ def main():
         "sharpe_weight": 0.3,            # 更重视收益
         "drawdown_weight": 0.2,
         "stability_weight": 0.5,         # 重视交易频率
+        "population_size": 2000,         # 更大的种群以探索更多策略
     }
     
-    # 🔄 长期训练配置
+    # 🔄 长期训练配置 (CUDA版)
     LONG_TERM_CONFIG = {
         **TRAINING_CONFIG,
         "generations": -1,               # 无限训练
-        "early_stop_patience": 100,      # 更长的耐心
-        "checkpoint_interval": 50,       # 更长的保存间隔
+        "early_stop_patience": 200,      # 更长的耐心
+        "checkpoint_interval": 100,      # 更长的保存间隔
+        "population_size": 2000,         # 更大的种群
+    }
+    
+    # 🧪 实验性配置 (使用最新CUDA特性)
+    EXPERIMENTAL_CONFIG = {
+        **TRAINING_CONFIG,
+        "mixed_precision": True,         # 混合精度训练
+        "use_torch_scan": True,          # 使用最新的torch.scan
+        "population_size": 4000,
+        "batch_size": 2500,
+        "gpu_memory_fraction": 0.95,
     }
     
     # ==============================================================================
@@ -136,18 +167,42 @@ def main():
     # ==============================================================================
     
     # 选择配置 (取消注释想要使用的配置)
-    ACTIVE_CONFIG = TRAINING_CONFIG           # 默认配置
-    # ACTIVE_CONFIG = QUICK_TEST_CONFIG       # 快速测试
-    # ACTIVE_CONFIG = HIGH_PERFORMANCE_CONFIG # 高性能
-    # ACTIVE_CONFIG = CONSERVATIVE_CONFIG     # 保守策略
-    # ACTIVE_CONFIG = AGGRESSIVE_CONFIG       # 激进策略
-    # ACTIVE_CONFIG = LONG_TERM_CONFIG        # 长期训练
+    ACTIVE_CONFIG = TRAINING_CONFIG              # 默认配置
+    # ACTIVE_CONFIG = QUICK_TEST_CONFIG          # 快速测试
+    # ACTIVE_CONFIG = HIGH_PERFORMANCE_CONFIG    # 高性能
+    # ACTIVE_CONFIG = EXTREME_PERFORMANCE_CONFIG # 极限性能
+    # ACTIVE_CONFIG = CONSERVATIVE_CONFIG        # 保守策略
+    # ACTIVE_CONFIG = AGGRESSIVE_CONFIG          # 激进策略
+    # ACTIVE_CONFIG = LONG_TERM_CONFIG           # 长期训练
+    # ACTIVE_CONFIG = EXPERIMENTAL_CONFIG        # 实验性配置
     
     # ==============================================================================
     # ======================= 参数修改区域结束 ==================================
     # ==============================================================================
 
-    # --- 1. 自动化设置与路径管理 ---
+    print("=== CUDA GPU加速遗传算法交易员训练开始 ===")
+    
+    # --- 1. CUDA环境检查与优化 ---
+    print("\n--- CUDA环境检查 ---")
+    cuda_info = check_cuda_compatibility()
+    for key, value in cuda_info.items():
+        if key == 'gpus':
+            print(f"可用GPU:")
+            for i, gpu in enumerate(value):
+                print(f"  GPU {i}: {gpu['name']} ({gpu['memory_gb']:.1f}GB)")
+        elif key not in ['gpus']:
+            print(f"{key}: {value}")
+    
+    if not cuda_info['cuda_available']:
+        print("❌ CUDA不可用，请检查CUDA安装")
+        return
+    
+    print("✅ CUDA环境检查通过")
+    
+    # 优化CUDA设置
+    optimize_cuda_settings()
+    
+    # --- 2. 自动化设置与路径管理 ---
     output_dir = Path(ACTIVE_CONFIG["results_dir"])
     checkpoint_dir = output_dir / "checkpoints"
     data_dir = Path(ACTIVE_CONFIG["data_directory"])
@@ -155,13 +210,12 @@ def main():
     output_dir.mkdir(exist_ok=True)
     checkpoint_dir.mkdir(exist_ok=True)
 
-    print("=== GPU加速遗传算法交易员训练开始 (自动化模式) ===")
     print("\n--- 训练参数 ---")
     for key, value in ACTIVE_CONFIG.items():
         print(f"{key}: {value}")
     print("--------------------\n")
     
-    # --- 2. 自动发现最新的数据文件 ---
+    # --- 3. 自动发现最新的数据文件 ---
     try:
         data_files = sorted(data_dir.glob("*.csv"), key=os.path.getmtime, reverse=True)
         if not data_files:
@@ -173,7 +227,7 @@ def main():
         print(f"数据目录 '{data_dir}' 不存在。")
         return
 
-     # --- 3. 自动发现最新的检查点 ---
+    # --- 4. 自动发现最新的检查点 ---
     load_checkpoint_path = None
     if ACTIVE_CONFIG["save_checkpoints"]:
         checkpoints = sorted(checkpoint_dir.glob("*.pt"), key=os.path.getmtime, reverse=True)
@@ -197,22 +251,37 @@ def main():
             print("未发现检查点，将开始新的训练。")
 
     try:
-        # --- 4. 初始化GPU和数据处理器 ---
-        print("初始化GPU环境...")
-        gpu_manager = get_windows_gpu_manager()
-        print(f"✅ GPU加速已{'启用' if gpu_manager.device.type == 'privateuseone' else '禁用'}")
+        # --- 5. 初始化CUDA GPU管理器 ---
+        print("初始化CUDA GPU环境...")
+        gpu_manager = get_cuda_gpu_manager(device_id=ACTIVE_CONFIG.get("gpu_device_id", 0))
+        
+        # 设置GPU内存使用限制
+        if "gpu_memory_fraction" in ACTIVE_CONFIG:
+            gpu_manager.set_memory_fraction(ACTIVE_CONFIG["gpu_memory_fraction"])
+        
+        print(f"✅ CUDA GPU加速已{'启用' if gpu_manager.device.type == 'cuda' else '禁用'}")
+        
+        # 显示GPU内存使用情况
+        gpu_alloc, gpu_total, sys_used, sys_total = gpu_manager.get_memory_usage()
+        print(f"GPU内存: {gpu_alloc:.2f}GB / {gpu_total:.2f}GB")
+        print(f"系统内存: {sys_used:.2f}GB / {sys_total:.2f}GB")
 
-        print("开始数据处理...")
+        # --- 6. 数据处理 ---
+        print("\n开始数据处理...")
+        
+        # 注意：这里我们需要修改GPUDataProcessor以支持CUDA
+        # 暂时使用原有的处理器，但需要确保数据能正确转移到CUDA GPU
         processor = GPUDataProcessor(
             window_size=ACTIVE_CONFIG["window_size"],
             normalization_method=ACTIVE_CONFIG["normalization"],
-            gpu_manager=gpu_manager
+            gpu_manager=gpu_manager  # 传入CUDA GPU管理器
         )
+        
         train_features, train_labels = processor.load_and_process_data(latest_data_file)
         print(f"训练数据形状: {train_features.shape}, 标签数据形状: {train_labels.shape}")
 
-        # --- 5. 配置并初始化遗传算法 ---
-        ga_config = WindowsGAConfig(
+        # --- 7. 配置并初始化CUDA遗传算法 ---
+        ga_config = CudaGAConfig(
             population_size=ACTIVE_CONFIG["population_size"],
             max_generations=ACTIVE_CONFIG["generations"],
             mutation_rate=ACTIVE_CONFIG["mutation_rate"],
@@ -235,22 +304,27 @@ def main():
             early_stop_patience=ACTIVE_CONFIG["early_stop_patience"],
             use_torch_scan=ACTIVE_CONFIG["use_torch_scan"]
         )
-        print(f"遗传算法配置: {ga_config}")
-        ga = WindowsGPUAcceleratedGA(ga_config, gpu_manager)
+        print(f"CUDA遗传算法配置: {ga_config}")
+        ga = CudaGPUAcceleratedGA(ga_config, gpu_manager)
 
-        # --- 6. 智能加载或初始化种群 ---
+        # --- 8. 智能加载或初始化种群 ---
         if load_checkpoint_path:
             ga.load_checkpoint(str(load_checkpoint_path))
         else:
             print("初始化新的种群...")
             ga.initialize_population(seed=int(time.time())) # 使用时间戳作为种子
 
-        # --- 7. 开始进化 ---
-        print("开始进化过程...")
+        # --- 9. 开始进化 ---
+        print("开始CUDA加速进化过程...")
         
         # 使用固定的日志文件名，所有训练结果都追加到同一个文件
-        generation_log_file = output_dir / "training_history.jsonl"
+        generation_log_file = output_dir / "training_history_cuda.jsonl"
         print(f"📝 训练日志将写入: {generation_log_file}")
+        
+        # 启用混合精度训练（实验性）
+        if ACTIVE_CONFIG.get("mixed_precision", False):
+            print("🧪 启用混合精度训练（实验性功能）")
+            # 这里可以添加混合精度训练的代码
         
         results = ga.evolve(
             train_features,
@@ -265,31 +339,52 @@ def main():
             output_dir=output_dir
         )
 
-        # --- 8. 保存最终结果 ---
+        # --- 10. 保存最终结果 ---
         print("训练完成，正在保存最终结果...")
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         
         # 保存最佳个体
-        best_individual_path = output_dir / f"best_individual_{timestamp}.npy"
+        best_individual_path = output_dir / f"best_individual_cuda_{timestamp}.npy"
         np.save(best_individual_path, results['best_individual'])
         
-        # 训练历史已通过实时日志记录，无需重复保存
+        # 保存训练配置
+        config_path = output_dir / f"training_config_cuda_{timestamp}.json"
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(ACTIVE_CONFIG, f, indent=2, ensure_ascii=False)
 
-        # --- 9. 输出最终报告 ---
-        print("="*60)
-        print("              GPU加速遗传算法训练完成")
-        print("="*60)
-        print(f"  - 最佳适应度: {results['best_fitness']:.4f}")
-        print(f"  - 总训练时间: {results['total_time']:.2f}秒")
-        print(f"  - 最终代数:   {results['final_generation']}")
-        print(f"  - 最佳个体:   {best_individual_path}")
-        print(f"  - 实时日志:   {generation_log_file}")
-        print(f"  - 结果目录:   {output_dir}")
-        print("="*60)
+        # --- 11. 输出最终报告 ---
+        print("="*70)
+        print("              CUDA GPU加速遗传算法训练完成")
+        print("="*70)
+        print(f"  - 使用GPU:     {gpu_manager.device}")
+        if gpu_manager.device.type == 'cuda':
+            print(f"  - GPU名称:     {torch.cuda.get_device_name(gpu_manager.device.index)}")
+        print(f"  - 最佳适应度:   {results['best_fitness']:.6f}")
+        print(f"  - 总训练时间:   {results['total_time']:.2f}秒")
+        print(f"  - 最终代数:     {results['final_generation']}")
+        print(f"  - 种群大小:     {ACTIVE_CONFIG['population_size']}")
+        print(f"  - 最佳个体:     {best_individual_path}")
+        print(f"  - 训练配置:     {config_path}")
+        print(f"  - 实时日志:     {generation_log_file}")
+        print(f"  - 结果目录:     {output_dir}")
+        print("="*70)
+        
+        # 显示最终GPU内存使用情况
+        gpu_alloc, gpu_total, sys_used, sys_total = gpu_manager.get_memory_usage()
+        print(f"最终GPU内存使用: {gpu_alloc:.2f}GB / {gpu_total:.2f}GB")
+        print(f"最终系统内存使用: {sys_used:.2f}GB / {sys_total:.2f}GB")
 
     except Exception as e:
         print(f"训练过程中发生严重错误: {e}")
+        import traceback
+        traceback.print_exc()
         raise
+    finally:
+        # 清理GPU缓存
+        if 'gpu_manager' in locals():
+            gpu_manager.clear_cache()
+            print("GPU缓存已清理")
+
 
 if __name__ == "__main__":
     main()
