@@ -229,6 +229,9 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                         # 获取优化总结
                         multi_objective_stats = self.multi_objective_optimizer.get_optimization_summary(objectives)
                         
+                        # 保存多目标统计数据供日志使用
+                        self._last_multi_objective_stats = multi_objective_stats
+                        
                         # 计算综合适应度（用于传统遗传算法操作）
                         self.fitness_scores = self._calculate_weighted_fitness(objectives)
                         
@@ -333,6 +336,10 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                             annealing_info,
                             population_for_diversity
                         )
+                        
+                        # 保存种群多样性数据供日志使用
+                        if hasattr(metrics, 'population_diversity'):
+                            self._last_population_diversity = metrics.population_diversity
                 except Exception as e:
                     self.logger.warning(f"增强监控更新失败: {e}")
                     # 继续执行，不中断训练
@@ -352,6 +359,72 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                 weighted_fitness += weight * obj_values
         
         return weighted_fitness
+    
+    def _save_generation_log(self, stats: Dict[str, Any], log_file: Path):
+        """直接保存代数日志到JSONL文件"""
+        try:
+            # 确保目录存在
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 准备完整的日志数据
+            log_data = stats.copy()
+            
+            # 添加增强版特有的数据
+            if self.data_annealer:
+                annealing_progress = self.data_annealer.get_annealing_progress()
+                log_data.update({
+                    'data_ratio': annealing_progress.get('data_ratio', 1.0),
+                    'complexity_score': annealing_progress.get('complexity_score', 1.0),
+                    'annealing_strategy': annealing_progress.get('strategy', 'none'),
+                    'annealing_progress': annealing_progress.get('progress', 0.0),
+                })
+            
+            # 添加多目标优化数据
+            if self.multi_objective_optimizer and hasattr(self, '_last_multi_objective_stats'):
+                log_data.update({
+                    'pareto_front_size': self._last_multi_objective_stats.get('pareto_front_size', 0),
+                    'hypervolume': self._last_multi_objective_stats.get('hypervolume', 0.0),
+                    'pareto_ratio': self._last_multi_objective_stats.get('pareto_ratio', 0.0),
+                })
+                
+                # 添加交易性能指标
+                obj_stats = self._last_multi_objective_stats.get('objective_stats', {})
+                log_data.update({
+                    'avg_sharpe_ratio': obj_stats.get('sharpe_ratio', {}).get('mean', 0.0),
+                    'avg_max_drawdown': obj_stats.get('max_drawdown', {}).get('mean', 0.0),
+                    'avg_total_return': obj_stats.get('total_return', {}).get('mean', 0.0),
+                    'avg_win_rate': obj_stats.get('win_rate', {}).get('mean', 0.0),
+                    'avg_trade_frequency': obj_stats.get('trade_frequency', {}).get('mean', 0.0),
+                    'avg_volatility': obj_stats.get('volatility', {}).get('mean', 0.0),
+                    'avg_profit_factor': obj_stats.get('profit_factor', {}).get('mean', 0.0),
+                })
+            
+            # 添加种群多样性（如果可用）
+            if hasattr(self, '_last_population_diversity'):
+                log_data['population_diversity'] = self._last_population_diversity
+            
+            # 写入文件
+            with open(log_file, 'a', encoding='utf-8', buffering=1) as f:
+                json.dump(log_data, f, ensure_ascii=False)
+                f.write('\n')
+                f.flush()
+                import os
+                os.fsync(f.fileno())  # 强制写入磁盘
+                
+        except Exception as e:
+            self.logger.error(f"保存代数日志失败: {e}")
+            # 尝试写入备份文件
+            try:
+                backup_file = log_file.with_suffix('.jsonl.backup')
+                with open(backup_file, 'a', encoding='utf-8', buffering=1) as f:
+                    json.dump(log_data, f, ensure_ascii=False)
+                    f.write('\n')
+                    f.flush()
+                    import os
+                    os.fsync(f.fileno())
+                self.logger.info(f"已写入备份文件: {backup_file}")
+            except Exception as e2:
+                self.logger.error(f"备份文件写入也失败: {e2}")
     
     def evolve_enhanced(self, features: torch.Tensor, labels: torch.Tensor,
                        save_checkpoints: bool = True,
@@ -420,6 +493,10 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                 # 添加系统内存信息
                 import psutil
                 stats['system_memory_gb'] = psutil.virtual_memory().used / 1e9
+                
+                # 直接保存到JSONL文件（确保实时写入）
+                if save_generation_results and generation_log_file and self.generation % generation_log_interval == 0:
+                    self._save_generation_log(stats, generation_log_file)
                 
                 # 显示进度（简化版）
                 if self.generation % 10 == 0 or self.generation < 10:

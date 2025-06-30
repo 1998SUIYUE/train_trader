@@ -69,12 +69,19 @@ class EnhancedTrainingMonitor:
     def find_log_file(self):
         """查找增强版训练日志文件"""
         paths = [
+            # 主要路径
             Path("results/enhanced_training_history.jsonl"),
             Path("../results/enhanced_training_history.jsonl"),
             Path("enhanced_training_history.jsonl"),
+            
             # 备份文件
             Path("results/enhanced_training_history.jsonl.backup"),
             Path("../results/enhanced_training_history.jsonl.backup"),
+            
+            # 兼容旧版本的路径
+            Path("results/training_history.jsonl"),
+            Path("../results/training_history.jsonl"),
+            Path("training_history.jsonl"),
         ]
         
         for path in paths:
