@@ -330,8 +330,8 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
             if self.enhanced_monitor:
                 try:
                     with timer("enhanced_monitoring", "ga"):
-                        # 大幅减少种群多样性计算频率以提高性能
-                        population_for_diversity = self.population if self.generation % 50 == 0 else None
+                        # 适度减少种群多样性计算频率以提高性能
+                        population_for_diversity = self.population if self.generation % 10 == 0 else None
                         
                         metrics = self.enhanced_monitor.update_metrics(
                             self.generation,

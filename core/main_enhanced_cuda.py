@@ -163,7 +163,7 @@ def main():
         "enable_enhanced_monitoring": True,   # 启用增强监控
         "enable_hypervolume": False,          # 禁用超体积计算
         "detailed_logging": True,             # 启用详细日志
-        "track_diversity": False,             # 禁用多样性跟踪（耗时）
+        "track_diversity": True,              # 启用多样性跟踪
         "track_convergence": True,            # 启用收敛跟踪
         
         # 简化多目标优化

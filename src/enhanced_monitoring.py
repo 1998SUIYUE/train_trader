@@ -226,25 +226,31 @@ class EnhancedMonitor:
                 metrics.convergence_speed = 1.0 / (fitness_range + 1e-8)
     
     def _calculate_population_diversity(self, population: torch.Tensor) -> float:
-        """计算种群多样性"""
+        """计算种群多样性（优化版）"""
         if population.shape[0] < 2:
             return 0.0
         
         try:
-            # 计算种群中个体间的平均欧氏距离
+            # 使用更简单高效的方法：计算种群标准差的平均值
             population_flat = population.view(population.shape[0], -1)
             
-            # 随机采样以提高效率（如果种群很大）
-            sample_size = min(50, population.shape[0])  # 减少采样大小以提高速度
+            # 方法1：快速标准差方法
+            if population.shape[0] > 100:
+                # 对于大种群，使用标准差作为多样性指标
+                std_values = torch.std(population_flat, dim=0)
+                diversity = torch.mean(std_values).item()
+                return diversity
+            
+            # 方法2：小种群使用采样距离方法
+            sample_size = min(15, population.shape[0])
             if population.shape[0] > sample_size:
                 indices = torch.randperm(population.shape[0])[:sample_size]
                 sample_pop = population_flat[indices]
             else:
                 sample_pop = population_flat
             
-            # 使用更高效的方法计算平均距离
-            # 随机选择一些个体对来计算距离，而不是计算所有对
-            n_pairs = min(100, sample_size * (sample_size - 1) // 2)  # 最多计算100对
+            # 计算少量个体对的距离
+            n_pairs = min(20, sample_size * (sample_size - 1) // 2)
             
             if n_pairs > 0:
                 # 随机选择个体对
@@ -256,7 +262,7 @@ class EnhancedMonitor:
                     indices_i = indices_i[mask]
                     indices_j = indices_j[mask]
                     
-                    # 计算距离
+                    # 计算L2距离
                     distances = torch.norm(sample_pop[indices_i] - sample_pop[indices_j], dim=1)
                     avg_distance = distances.mean().item()
                     return avg_distance
@@ -264,7 +270,7 @@ class EnhancedMonitor:
             return 0.0
             
         except Exception as e:
-            self.logger.warning(f"计算种群多样性失败: {e}")
+            self.logger.debug(f"计算种群多样性失败: {e}")
             return 0.0
     
     def _serialize_config(self) -> Dict[str, Any]:
