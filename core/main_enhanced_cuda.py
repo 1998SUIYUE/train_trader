@@ -148,7 +148,7 @@ def main():
         "monitoring_save_interval": 5,
     }
     
-    # 🛠️ 调试配置 (解决卡死问题)
+    # 🛠️ 调试配置 (解决卡死问题但保留JSON日志)
     DEBUG_CONFIG = {
         **ENHANCED_TRAINING_CONFIG,
         "population_size": 1000,
@@ -157,20 +157,24 @@ def main():
         "batch_size": 500,
         "warmup_generations": 10,
         "pareto_front_size": 30,
-        "monitoring_save_interval": 20,
+        "monitoring_save_interval": 5,        # 更频繁保存
         
-        # 禁用可能导致卡死的功能
-        "enable_enhanced_monitoring": False,  # 禁用增强监控
+        # 启用简化的监控功能
+        "enable_enhanced_monitoring": True,   # 启用增强监控
         "enable_hypervolume": False,          # 禁用超体积计算
-        "detailed_logging": False,            # 禁用详细日志
-        "track_diversity": False,             # 禁用多样性跟踪
-        "track_convergence": False,           # 禁用收敛跟踪
+        "detailed_logging": True,             # 启用详细日志
+        "track_diversity": False,             # 禁用多样性跟踪（耗时）
+        "track_convergence": True,            # 启用收敛跟踪
         
         # 简化多目标优化
         "objective_weights": {
             "sharpe_ratio": 0.6,              # 只关注主要目标
             "max_drawdown": 0.4,
         },
+        
+        # 强制保存设置
+        "save_generation_results": True,      # 确保保存每代结果
+        "generation_log_interval": 1,         # 每代都记录
     }
     
     # 💪 高性能配置 (适合高端NVIDIA GPU)
@@ -288,9 +292,9 @@ def main():
     # ==============================================================================
     
     # 选择配置 (取消注释想要使用的配置)
-    ACTIVE_CONFIG = ENHANCED_TRAINING_CONFIG     # 默认增强配置
+    # ACTIVE_CONFIG = ENHANCED_TRAINING_CONFIG     # 默认增强配置
     # ACTIVE_CONFIG = QUICK_TEST_CONFIG          # 快速测试
-    # ACTIVE_CONFIG = DEBUG_CONFIG               # 调试配置（解决卡死问题）
+    ACTIVE_CONFIG = DEBUG_CONFIG               # 调试配置（解决卡死问题）
     # ACTIVE_CONFIG = HIGH_PERFORMANCE_CONFIG    # 高性能
     # ACTIVE_CONFIG = EXTREME_PERFORMANCE_CONFIG # 极限性能
     # ACTIVE_CONFIG = CONSERVATIVE_CONFIG        # 保守策略
@@ -480,9 +484,23 @@ def main():
         with timer("enhanced_evolution_process", "training"):
             print("开始增强版CUDA加速进化过程...")
             
-            # 使用固定的日志文件名
-            generation_log_file = output_dir / "enhanced_training_history.jsonl"
+            # 使用固定的日志文件名（确保绝对路径）
+            generation_log_file = output_dir.resolve() / "enhanced_training_history.jsonl"
             print(f"📝 增强版训练日志将写入: {generation_log_file}")
+            
+            # 确保日志文件目录存在
+            generation_log_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 创建一个初始的空文件，确保文件可以被创建
+            try:
+                with open(generation_log_file, 'a', encoding='utf-8') as f:
+                    pass  # 只是确保文件可以被创建
+                print(f"✅ 日志文件路径验证成功")
+            except Exception as e:
+                print(f"❌ 日志文件路径验证失败: {e}")
+                print(f"将使用备用路径...")
+                generation_log_file = Path.cwd() / "results" / "enhanced_training_history.jsonl"
+                generation_log_file.parent.mkdir(parents=True, exist_ok=True)
             
             # 启用混合精度训练（实验性）
             if ACTIVE_CONFIG.get("mixed_precision", False):

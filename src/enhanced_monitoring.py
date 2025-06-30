@@ -183,12 +183,10 @@ class EnhancedMonitor:
             self.best_fitness_ever = metrics.best_fitness
             self.best_generation = generation
         
-        # 定期保存（增加更频繁的保存以防止数据丢失）
+        # 定期保存（确保JSON文件生成）
         if self.config.log_file:
-            # 每代都保存，但只在特定间隔时刷新
-            should_save = (generation % self.config.save_interval == 0) or (generation < 10) or (generation % 100 == 0)
-            if should_save:
-                self._save_metrics(metrics)
+            # 每代都保存，确保实时更新
+            self._save_metrics(metrics)
         
         return metrics
     
@@ -281,74 +279,81 @@ class EnhancedMonitor:
         return config_dict
     
     def _save_metrics(self, metrics: PerformanceMetrics):
-        """保存指标到文件"""
+        """简化版指标保存（确保JSON文件生成）"""
         if not self.config.log_file:
             return
         
-        # 尝试多种保存方式，确保数据不丢失
-        saved_successfully = False
-        
         try:
+            # 确保目录存在
+            self.config.log_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 准备数据
+            metrics_dict = asdict(metrics)
+            
+            # 主要保存JSON格式
             if self.config.export_format in ["json", "both"]:
-                # JSON格式
                 json_file = self.config.log_file.with_suffix('.jsonl')
                 
-                # 创建备份文件名
-                backup_file = json_file.with_suffix('.jsonl.backup')
-                
-                # 准备数据
-                metrics_dict = asdict(metrics)
-                json_line = json.dumps(metrics_dict, ensure_ascii=False) + '\n'
-                
-                # 先写入主文件
                 try:
+                    # 直接写入，不使用fsync避免阻塞
                     with open(json_file, 'a', encoding='utf-8', buffering=1) as f:
-                        f.write(json_line)
+                        json.dump(metrics_dict, f, ensure_ascii=False)
+                        f.write('\n')
                         f.flush()
-                        import os
-                        os.fsync(f.fileno())  # 强制写入磁盘
-                    saved_successfully = True
-                except Exception as e1:
-                    self.logger.warning(f"主文件写入失败: {e1}")
                     
-                    # 尝试写入备份文件
+                    # 验证文件写入
+                    if json_file.exists() and json_file.stat().st_size > 0:
+                        return  # 成功写入，直接返回
+                    
+                except Exception as e1:
+                    self.logger.debug(f"主JSON文件写入失败: {e1}")
+                    
+                    # 尝试备份文件
                     try:
+                        backup_file = json_file.with_suffix('.jsonl.backup')
                         with open(backup_file, 'a', encoding='utf-8', buffering=1) as f:
-                            f.write(json_line)
+                            json.dump(metrics_dict, f, ensure_ascii=False)
+                            f.write('\n')
                             f.flush()
-                            import os
-                            os.fsync(f.fileno())
-                        saved_successfully = True
-                        self.logger.info(f"已写入备份文件: {backup_file}")
+                        self.logger.debug(f"已写入备份文件: {backup_file}")
+                        return
                     except Exception as e2:
-                        self.logger.error(f"备份文件写入也失败: {e2}")
+                        self.logger.debug(f"备份文件写入失败: {e2}")
             
-            if self.config.export_format in ["csv", "both"] and not saved_successfully:
-                # CSV格式作为最后的备份
+            # 如果JSON失败，尝试CSV
+            if self.config.export_format in ["csv", "both"]:
                 try:
                     csv_file = self.config.log_file.with_suffix('.csv')
-                    import pandas as pd
                     
-                    df = pd.DataFrame([asdict(metrics)])
+                    # 简化的CSV写入
+                    import csv
+                    file_exists = csv_file.exists()
                     
-                    # 如果文件不存在，写入表头
-                    if not csv_file.exists():
-                        df.to_csv(csv_file, index=False)
-                    else:
-                        df.to_csv(csv_file, mode='a', header=False, index=False)
-                    saved_successfully = True
+                    with open(csv_file, 'a', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=metrics_dict.keys())
+                        if not file_exists:
+                            writer.writeheader()
+                        writer.writerow(metrics_dict)
+                        f.flush()
+                    
+                    self.logger.debug(f"已写入CSV文件: {csv_file}")
+                    return
+                    
                 except Exception as e:
-                    self.logger.error(f"CSV保存也失败: {e}")
-        
+                    self.logger.debug(f"CSV保存失败: {e}")
+            
+            # 最后的应急措施：简单文本文件
+            try:
+                simple_file = self.config.log_file.with_suffix('.simple.log')
+                with open(simple_file, 'a', encoding='utf-8') as f:
+                    f.write(f"Gen {metrics.generation}: fitness={metrics.best_fitness:.6f}\n")
+                    f.flush()
+                self.logger.debug(f"已写入简单日志: {simple_file}")
+            except Exception as e:
+                self.logger.error(f"所有保存方式都失败: {e}")
+                
         except Exception as e:
             self.logger.error(f"保存指标完全失败: {e}")
-        
-        if not saved_successfully:
-            # 最后的应急措施：保存到内存中，稍后重试
-            if not hasattr(self, '_failed_saves'):
-                self._failed_saves = []
-            self._failed_saves.append(metrics)
-            self.logger.warning(f"指标暂存到内存，待稍后重试保存")
     
     def _retry_failed_saves(self):
         """重试保存失败的指标"""
