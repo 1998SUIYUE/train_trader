@@ -248,6 +248,17 @@ class EnhancedMonitor:
         
         return avg_distance
     
+    def _serialize_config(self) -> Dict[str, Any]:
+        """序列化配置，处理Path对象"""
+        config_dict = asdict(self.config)
+        
+        # 将Path对象转换为字符串
+        for key, value in config_dict.items():
+            if isinstance(value, Path):
+                config_dict[key] = str(value)
+        
+        return config_dict
+    
     def _save_metrics(self, metrics: PerformanceMetrics):
         """保存指标到文件"""
         if not self.config.log_file:
@@ -444,7 +455,7 @@ class EnhancedMonitor:
                 'training_summary': self.get_training_summary(),
                 'metrics_history': [asdict(m) for m in self.metrics_history],
                 'configuration': {
-                    'monitoring_config': asdict(self.config),
+                    'monitoring_config': self._serialize_config(),
                     'convergence_window': self.convergence_window,
                     'stagnation_threshold': self.stagnation_threshold,
                 },

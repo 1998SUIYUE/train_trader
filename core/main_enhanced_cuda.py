@@ -488,6 +488,12 @@ def main():
         with open(config_path, 'w', encoding='utf-8') as f:
             # 转换不可序列化的对象
             serializable_config = ACTIVE_CONFIG.copy()
+            
+            # 将Path对象转换为字符串
+            for key, value in serializable_config.items():
+                if isinstance(value, Path):
+                    serializable_config[key] = str(value)
+            
             json.dump(serializable_config, f, indent=2, ensure_ascii=False)
 
         # --- 12. 输出最终报告 ---
