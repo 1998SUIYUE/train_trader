@@ -183,9 +183,12 @@ class EnhancedMonitor:
             self.best_fitness_ever = metrics.best_fitness
             self.best_generation = generation
         
-        # 定期保存
-        if self.config.log_file and generation % self.config.save_interval == 0:
-            self._save_metrics(metrics)
+        # 定期保存（增加更频繁的保存以防止数据丢失）
+        if self.config.log_file:
+            # 每代都保存，但只在特定间隔时刷新
+            should_save = (generation % self.config.save_interval == 0) or (generation < 10) or (generation % 100 == 0)
+            if should_save:
+                self._save_metrics(metrics)
         
         return metrics
     
@@ -229,24 +232,42 @@ class EnhancedMonitor:
         if population.shape[0] < 2:
             return 0.0
         
-        # 计算种群中个体间的平均欧氏距离
-        population_flat = population.view(population.shape[0], -1)
-        
-        # 随机采样以提高效率（如果种群很大）
-        if population.shape[0] > 100:
-            indices = torch.randperm(population.shape[0])[:100]
-            sample_pop = population_flat[indices]
-        else:
-            sample_pop = population_flat
-        
-        # 计算成对距离
-        distances = torch.cdist(sample_pop, sample_pop)
-        
-        # 排除对角线（自己与自己的距离）
-        mask = ~torch.eye(distances.shape[0], dtype=torch.bool, device=distances.device)
-        avg_distance = distances[mask].mean().item()
-        
-        return avg_distance
+        try:
+            # 计算种群中个体间的平均欧氏距离
+            population_flat = population.view(population.shape[0], -1)
+            
+            # 随机采样以提高效率（如果种群很大）
+            sample_size = min(50, population.shape[0])  # 减少采样大小以提高速度
+            if population.shape[0] > sample_size:
+                indices = torch.randperm(population.shape[0])[:sample_size]
+                sample_pop = population_flat[indices]
+            else:
+                sample_pop = population_flat
+            
+            # 使用更高效的方法计算平均距离
+            # 随机选择一些个体对来计算距离，而不是计算所有对
+            n_pairs = min(100, sample_size * (sample_size - 1) // 2)  # 最多计算100对
+            
+            if n_pairs > 0:
+                # 随机选择个体对
+                indices_i = torch.randint(0, sample_size, (n_pairs,))
+                indices_j = torch.randint(0, sample_size, (n_pairs,))
+                # 确保不是同一个个体
+                mask = indices_i != indices_j
+                if mask.sum() > 0:
+                    indices_i = indices_i[mask]
+                    indices_j = indices_j[mask]
+                    
+                    # 计算距离
+                    distances = torch.norm(sample_pop[indices_i] - sample_pop[indices_j], dim=1)
+                    avg_distance = distances.mean().item()
+                    return avg_distance
+            
+            return 0.0
+            
+        except Exception as e:
+            self.logger.warning(f"计算种群多样性失败: {e}")
+            return 0.0
     
     def _serialize_config(self) -> Dict[str, Any]:
         """序列化配置，处理Path对象"""
@@ -264,29 +285,92 @@ class EnhancedMonitor:
         if not self.config.log_file:
             return
         
+        # 尝试多种保存方式，确保数据不丢失
+        saved_successfully = False
+        
         try:
             if self.config.export_format in ["json", "both"]:
                 # JSON格式
                 json_file = self.config.log_file.with_suffix('.jsonl')
-                with open(json_file, 'a', encoding='utf-8') as f:
-                    json.dump(asdict(metrics), f, ensure_ascii=False)
-                    f.write('\n')
+                
+                # 创建备份文件名
+                backup_file = json_file.with_suffix('.jsonl.backup')
+                
+                # 准备数据
+                metrics_dict = asdict(metrics)
+                json_line = json.dumps(metrics_dict, ensure_ascii=False) + '\n'
+                
+                # 先写入主文件
+                try:
+                    with open(json_file, 'a', encoding='utf-8', buffering=1) as f:
+                        f.write(json_line)
+                        f.flush()
+                        import os
+                        os.fsync(f.fileno())  # 强制写入磁盘
+                    saved_successfully = True
+                except Exception as e1:
+                    self.logger.warning(f"主文件写入失败: {e1}")
+                    
+                    # 尝试写入备份文件
+                    try:
+                        with open(backup_file, 'a', encoding='utf-8', buffering=1) as f:
+                            f.write(json_line)
+                            f.flush()
+                            import os
+                            os.fsync(f.fileno())
+                        saved_successfully = True
+                        self.logger.info(f"已写入备份文件: {backup_file}")
+                    except Exception as e2:
+                        self.logger.error(f"备份文件写入也失败: {e2}")
             
-            if self.config.export_format in ["csv", "both"]:
-                # CSV格式
-                csv_file = self.config.log_file.with_suffix('.csv')
-                import pandas as pd
-                
-                df = pd.DataFrame([asdict(metrics)])
-                
-                # 如果文件不存在，写入表头
-                if not csv_file.exists():
-                    df.to_csv(csv_file, index=False)
-                else:
-                    df.to_csv(csv_file, mode='a', header=False, index=False)
+            if self.config.export_format in ["csv", "both"] and not saved_successfully:
+                # CSV格式作为最后的备份
+                try:
+                    csv_file = self.config.log_file.with_suffix('.csv')
+                    import pandas as pd
+                    
+                    df = pd.DataFrame([asdict(metrics)])
+                    
+                    # 如果文件不存在，写入表头
+                    if not csv_file.exists():
+                        df.to_csv(csv_file, index=False)
+                    else:
+                        df.to_csv(csv_file, mode='a', header=False, index=False)
+                    saved_successfully = True
+                except Exception as e:
+                    self.logger.error(f"CSV保存也失败: {e}")
         
         except Exception as e:
-            self.logger.error(f"保存指标失败: {e}")
+            self.logger.error(f"保存指标完全失败: {e}")
+        
+        if not saved_successfully:
+            # 最后的应急措施：保存到内存中，稍后重试
+            if not hasattr(self, '_failed_saves'):
+                self._failed_saves = []
+            self._failed_saves.append(metrics)
+            self.logger.warning(f"指标暂存到内存，待稍后重试保存")
+    
+    def _retry_failed_saves(self):
+        """重试保存失败的指标"""
+        if not hasattr(self, '_failed_saves') or not self._failed_saves:
+            return
+        
+        retry_count = 0
+        while self._failed_saves and retry_count < 3:
+            retry_count += 1
+            failed_metrics = self._failed_saves.copy()
+            self._failed_saves.clear()
+            
+            for metrics in failed_metrics:
+                try:
+                    self._save_metrics(metrics)
+                except Exception as e:
+                    self.logger.warning(f"重试保存失败 (第{retry_count}次): {e}")
+                    self._failed_saves.append(metrics)
+            
+            if self._failed_saves:
+                import time
+                time.sleep(0.1)  # 短暂等待后重试
     
     def get_training_summary(self) -> Dict[str, Any]:
         """获取训练总结"""

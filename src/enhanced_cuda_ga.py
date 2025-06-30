@@ -199,34 +199,55 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
             # 2. 评估适应度（包括多目标）
             multi_objective_stats = {}
             if self.multi_objective_optimizer:
-                with timer("multi_objective_evaluation", "ga"):
-                    # 提取个体参数
-                    weights = self.population[:, :self.config.feature_dim]
-                    biases = self.population[:, self.config.feature_dim]
-                    buy_thresholds = self.population[:, self.config.feature_dim + 1]
-                    sell_thresholds = self.population[:, self.config.feature_dim + 2]
-                    stop_losses = self.population[:, self.config.feature_dim + 3]
-                    max_positions = self.population[:, self.config.feature_dim + 4]
-                    max_drawdowns = self.population[:, self.config.feature_dim + 5]
-                    trade_positions = self.population[:, self.config.feature_dim + 6]
-                    
-                    # 计算预测信号
-                    signals = torch.sigmoid(torch.matmul(weights, annealed_features.T) + biases.unsqueeze(1))
-                    
-                    # 多目标评估
-                    objectives = self.multi_objective_optimizer.evaluate_all_objectives(
-                        signals, annealed_labels, buy_thresholds, sell_thresholds,
-                        stop_losses, max_positions, max_drawdowns, trade_positions
+                try:
+                    with timer("multi_objective_evaluation", "ga"):
+                        # 提取个体参数
+                        weights = self.population[:, :self.config.feature_dim]
+                        biases = self.population[:, self.config.feature_dim]
+                        buy_thresholds = self.population[:, self.config.feature_dim + 1]
+                        sell_thresholds = self.population[:, self.config.feature_dim + 2]
+                        stop_losses = self.population[:, self.config.feature_dim + 3]
+                        max_positions = self.population[:, self.config.feature_dim + 4]
+                        max_drawdowns = self.population[:, self.config.feature_dim + 5]
+                        trade_positions = self.population[:, self.config.feature_dim + 6]
+                        
+                        # 计算预测信号
+                        signals = torch.sigmoid(torch.matmul(weights, annealed_features.T) + biases.unsqueeze(1))
+                        
+                        # 多目标评估
+                        objectives = self.multi_objective_optimizer.evaluate_all_objectives(
+                            signals, annealed_labels, buy_thresholds, sell_thresholds,
+                            stop_losses, max_positions, max_drawdowns, trade_positions
+                        )
+                        
+                        # 计算帕累托前沿（可能耗时，添加简化版本）
+                        if self.generation % 5 == 0:  # 每5代计算一次完整的帕累托前沿
+                            pareto_front, domination_counts = self.multi_objective_optimizer.calculate_pareto_front(objectives)
+                        else:
+                            pareto_front, domination_counts = [], []
+                        
+                        # 获取优化总结
+                        multi_objective_stats = self.multi_objective_optimizer.get_optimization_summary(objectives)
+                        
+                        # 计算综合适应度（用于传统遗传算法操作）
+                        self.fitness_scores = self._calculate_weighted_fitness(objectives)
+                        
+                except Exception as e:
+                    self.logger.warning(f"多目标评估失败，回退到单目标: {e}")
+                    # 回退到原始适应度评估
+                    self.fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self.evaluate_fitness_batch(
+                        annealed_features, annealed_labels
                     )
-                    
-                    # 计算帕累托前沿
-                    pareto_front, domination_counts = self.multi_objective_optimizer.calculate_pareto_front(objectives)
-                    
-                    # 获取优化总结
-                    multi_objective_stats = self.multi_objective_optimizer.get_optimization_summary(objectives)
-                    
-                    # 计算综合适应度（用于传统遗传算法操作）
-                    self.fitness_scores = self._calculate_weighted_fitness(objectives)
+                    multi_objective_stats = {
+                        'pareto_front_size': 0,
+                        'hypervolume': 0.0,
+                        'pareto_ratio': 0.0,
+                        'objective_stats': {
+                            'sharpe_ratio': {'mean': torch.mean(sharpe_ratios).item()},
+                            'max_drawdown': {'mean': torch.mean(max_drawdowns_calc).item()},
+                            'trade_frequency': {'mean': torch.mean(normalized_trades).item()},
+                        }
+                    }
             else:
                 # 使用原始适应度评估
                 self.fitness_scores, sharpe_ratios, max_drawdowns_calc, normalized_trades = self.evaluate_fitness_batch(
@@ -300,14 +321,21 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
             
             # 6. 更新增强监控
             if self.enhanced_monitor:
-                with timer("enhanced_monitoring", "ga"):
-                    metrics = self.enhanced_monitor.update_metrics(
-                        self.generation,
-                        enhanced_stats,
-                        multi_objective_stats,
-                        annealing_info,
-                        self.population
-                    )
+                try:
+                    with timer("enhanced_monitoring", "ga"):
+                        # 减少种群多样性计算频率以提高性能
+                        population_for_diversity = self.population if self.generation % 5 == 0 else None
+                        
+                        metrics = self.enhanced_monitor.update_metrics(
+                            self.generation,
+                            enhanced_stats,
+                            multi_objective_stats,
+                            annealing_info,
+                            population_for_diversity
+                        )
+                except Exception as e:
+                    self.logger.warning(f"增强监控更新失败: {e}")
+                    # 继续执行，不中断训练
             
             # 记录历史
             self.fitness_history.append(enhanced_stats)
@@ -411,9 +439,13 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                     checkpoint_path = checkpoint_dir / f"checkpoint_gen_{self.generation}.pt"
                     self.save_checkpoint(str(checkpoint_path))
                 
-                # 定期清理GPU缓存
+                # 定期清理GPU缓存和重试保存
                 if self.generation % 10 == 0:
                     self.gpu_manager.clear_cache()
+                    
+                    # 重试保存失败的监控数据
+                    if self.enhanced_monitor and hasattr(self.enhanced_monitor, '_retry_failed_saves'):
+                        self.enhanced_monitor._retry_failed_saves()
         
         except KeyboardInterrupt:
             self.logger.info("\n训练被用户中断")
