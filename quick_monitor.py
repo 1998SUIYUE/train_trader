@@ -40,13 +40,13 @@ class QuickEnhancedMonitor:
         for path in paths:
             if path.exists():
                 self.log_file = path
-                print(f"🎯 找到日志文件: {path}")
+                print(f"🎯 Found log file: {path}")
                 return True
         
-        print("❌ 未找到训练日志文件")
-        print("请先启动训练:")
-        print("  - 增强版: python core/main_enhanced_cuda.py")
-        print("  - 普通版: python core/main_cuda.py")
+        print("❌ Training log file not found")
+        print("Please start training first:")
+        print("  - Enhanced: python core/main_enhanced_cuda.py")
+        print("  - Regular: python core/main_cuda.py")
         return False
     
     def load_latest_data(self):
@@ -62,14 +62,14 @@ class QuickEnhancedMonitor:
                         except json.JSONDecodeError:
                             continue
         except Exception as e:
-            print(f"⚠️  读取文件错误: {e}")
+            print(f"⚠️  File reading error: {e}")
         
         return data
     
     def display_status(self, data):
-        """显示训练状态"""
+        """Display training status"""
         if not data:
-            print("📝 暂无训练数据")
+            print("📝 No training data available")
             return
         
         latest = data[-1]
@@ -79,79 +79,79 @@ class QuickEnhancedMonitor:
         os.system('cls' if os.name == 'nt' else 'clear')
         
         print("=" * 80)
-        print("           🚀 增强版CUDA遗传算法训练监控 (快速版)")
+        print("           🚀 Enhanced CUDA Genetic Algorithm Training Monitor (Quick)")
         print("=" * 80)
         
-        # 基础信息
-        print(f"📈 当前代数: {latest.get('generation', 0)}")
-        print(f"🎯 最佳适应度: {latest.get('best_fitness', 0):.6f}")
-        print(f"📊 平均适应度: {latest.get('avg_fitness', 0):.6f}")
-        print(f"⏱️  代数时间: {latest.get('generation_time', 0):.2f}s")
-        print(f"🔄 无改进次数: {latest.get('no_improvement_count', 0)}")
+        # Basic information
+        print(f"📈 Current Generation: {latest.get('generation', 0)}")
+        print(f"🎯 Best Fitness: {latest.get('best_fitness', 0):.6f}")
+        print(f"📊 Average Fitness: {latest.get('avg_fitness', 0):.6f}")
+        print(f"⏱️  Generation Time: {latest.get('generation_time', 0):.2f}s")
+        print(f"🔄 No Improvement Count: {latest.get('no_improvement_count', 0)}")
         
-        # 增强版特有信息
+        # Enhanced version specific information
         if 'data_ratio' in latest:
-            print(f"\n🔥 数据退火:")
-            print(f"   📊 数据使用比例: {latest.get('data_ratio', 1.0):.3f}")
-            print(f"   🎯 复杂度得分: {latest.get('complexity_score', 1.0):.3f}")
-            print(f"   📈 退火策略: {latest.get('annealing_strategy', 'none')}")
+            print(f"\n🔥 Data Annealing:")
+            print(f"   📊 Data Usage Ratio: {latest.get('data_ratio', 1.0):.3f}")
+            print(f"   🎯 Complexity Score: {latest.get('complexity_score', 1.0):.3f}")
+            print(f"   📈 Annealing Strategy: {latest.get('annealing_strategy', 'none')}")
         
         if 'pareto_front_size' in latest:
-            print(f"\n🎯 多目标优化:")
-            print(f"   📊 帕累托前沿: {latest.get('pareto_front_size', 0)}")
-            print(f"   📈 超体积: {latest.get('hypervolume', 0.0):.4f}")
+            print(f"\n🎯 Multi-Objective Optimization:")
+            print(f"   📊 Pareto Front: {latest.get('pareto_front_size', 0)}")
+            print(f"   📈 Hypervolume: {latest.get('hypervolume', 0.0):.4f}")
         
         if 'avg_sharpe_ratio' in latest:
-            print(f"\n💰 交易性能:")
-            print(f"   📈 夏普比率: {latest.get('avg_sharpe_ratio', 0.0):.3f}")
-            print(f"   📉 最大回撤: {latest.get('avg_max_drawdown', 0.0):.3f}")
-            print(f"   💵 总收益率: {latest.get('avg_total_return', 0.0):.3f}")
-            print(f"   🎯 胜率: {latest.get('avg_win_rate', 0.0):.3f}")
+            print(f"\n💰 Trading Performance:")
+            print(f"   📈 Sharpe Ratio: {latest.get('avg_sharpe_ratio', 0.0):.3f}")
+            print(f"   📉 Max Drawdown: {latest.get('avg_max_drawdown', 0.0):.3f}")
+            print(f"   💵 Total Return: {latest.get('avg_total_return', 0.0):.3f}")
+            print(f"   🎯 Win Rate: {latest.get('avg_win_rate', 0.0):.3f}")
         
         if 'population_diversity' in latest:
-            print(f"\n🌈 算法状态:")
-            print(f"   🔀 种群多样性: {latest.get('population_diversity', 0.0):.3f}")
+            print(f"\n🌈 Algorithm Status:")
+            print(f"   🔀 Population Diversity: {latest.get('population_diversity', 0.0):.3f}")
         
-        # 系统性能
-        print(f"\n💻 系统性能:")
+        # System performance
+        print(f"\n💻 System Performance:")
         if 'gpu_memory_allocated' in latest:
-            print(f"   🎮 GPU内存: {latest['gpu_memory_allocated']:.2f}GB")
+            print(f"   🎮 GPU Memory: {latest['gpu_memory_allocated']:.2f}GB")
         if 'system_memory_gb' in latest:
-            print(f"   💾 系统内存: {latest['system_memory_gb']:.2f}GB")
+            print(f"   💾 System Memory: {latest['system_memory_gb']:.2f}GB")
         
-        # 统计信息
-        print(f"\n📊 训练统计:")
-        print(f"   📝 总记录数: {total_records}")
+        # Statistics
+        print(f"\n📊 Training Statistics:")
+        print(f"   📝 Total Records: {total_records}")
         
         if total_records >= 2:
-            # 计算训练速度
+            # Calculate training speed
             first_time = data[0].get('generation_time', 0)
             recent_times = [d.get('generation_time', 0) for d in data[-10:]]
             avg_time = sum(recent_times) / len(recent_times) if recent_times else 0
             
-            # 计算改进情况
+            # Calculate improvement
             first_fitness = data[0].get('best_fitness', 0)
             current_fitness = latest.get('best_fitness', 0)
             improvement = current_fitness - first_fitness
             
-            print(f"   ⚡ 平均代数时间: {avg_time:.2f}s")
-            print(f"   📈 适应度改进: {improvement:.6f}")
+            print(f"   ⚡ Avg Generation Time: {avg_time:.2f}s")
+            print(f"   📈 Fitness Improvement: {improvement:.6f}")
             
-            # 最近趋势
+            # Recent trend
             if total_records >= 5:
                 recent_fitness = [d.get('best_fitness', 0) for d in data[-5:]]
-                trend = "📈 上升" if recent_fitness[-1] > recent_fitness[0] else "📉 下降"
-                print(f"   📊 最近趋势: {trend}")
+                trend = "📈 Rising" if recent_fitness[-1] > recent_fitness[0] else "📉 Falling"
+                print(f"   📊 Recent Trend: {trend}")
         
         print("=" * 80)
-        print(f"🕒 更新时间: {time.strftime('%H:%M:%S')}")
-        print("按 Ctrl+C 停止监控")
+        print(f"🕒 Update Time: {time.strftime('%H:%M:%S')}")
+        print("Press Ctrl+C to stop monitoring")
         print("=" * 80)
     
     def monitor(self):
-        """开始监控"""
-        print("🚀 启动快速监控模式")
-        print("按 Ctrl+C 停止\n")
+        """Start monitoring"""
+        print("🚀 Starting quick monitoring mode")
+        print("Press Ctrl+C to stop\n")
         
         try:
             while True:
@@ -162,27 +162,27 @@ class QuickEnhancedMonitor:
                         self.display_status(data)
                         self.last_file_size = current_size
                     else:
-                        # 文件没有更新，显示等待状态
-                        print(f"\r⏳ 等待更新... {time.strftime('%H:%M:%S')}", end="", flush=True)
+                        # File not updated, show waiting status
+                        print(f"\r⏳ Waiting for updates... {time.strftime('%H:%M:%S')}", end="", flush=True)
                 else:
-                    print(f"\r⏳ 等待日志文件... {time.strftime('%H:%M:%S')}", end="", flush=True)
+                    print(f"\r⏳ Waiting for log file... {time.strftime('%H:%M:%S')}", end="", flush=True)
                 
-                time.sleep(2)  # 每2秒检查一次
+                time.sleep(2)  # Check every 2 seconds
                 
         except KeyboardInterrupt:
-            print("\n\n⏹️  监控已停止")
+            print("\n\n⏹️  Monitoring stopped")
 
 def main():
-    print("🚀 快速增强版训练监控器")
+    print("🚀 Quick Enhanced Training Monitor")
     print("=" * 40)
     
     try:
         monitor = QuickEnhancedMonitor()
         monitor.monitor()
     except KeyboardInterrupt:
-        print("\n⏹️  监控被中断")
+        print("\n⏹️  Monitoring interrupted")
     except Exception as e:
-        print(f"\n❌ 错误: {e}")
+        print(f"\n❌ Error: {e}")
 
 if __name__ == "__main__":
     main()

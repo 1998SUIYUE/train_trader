@@ -27,10 +27,10 @@ try:
     plt.rcParams['axes.unicode_minus'] = False
     
     PLOTTING_AVAILABLE = True
-    print("📊 图形界面可用 - 显示图表")
+    print("📊 Graphics available - showing charts")
 except ImportError:
     PLOTTING_AVAILABLE = False
-    print("📝 matplotlib不可用 - 文本模式")
+    print("📝 matplotlib not available - text mode")
 
 class EnhancedTrainingMonitor:
     def __init__(self):
@@ -87,18 +87,18 @@ class EnhancedTrainingMonitor:
         for path in paths:
             if path.exists():
                 self.log_file = path
-                print(f"🎯 找到日志文件: {path}")
+                print(f"🎯 Found log file: {path}")
                 return True
         
-        print("❌ 未找到增强版训练日志文件")
-        print("请先启动增强版训练: python core/main_enhanced_cuda.py")
-        print("或检查以下路径是否存在日志文件:")
+        print("❌ Enhanced training log file not found")
+        print("Please start enhanced training first: python core/main_enhanced_cuda.py")
+        print("Or check if log files exist at these paths:")
         for path in paths:
             print(f"  - {path}")
         return False
     
     def load_data(self):
-        """加载历史数据"""
+        """Load historical data"""
         data = []
         encodings = ['utf-8', 'latin1', 'cp1252']
         
@@ -111,19 +111,19 @@ class EnhancedTrainingMonitor:
                             try:
                                 data.append(json.loads(line))
                             except json.JSONDecodeError as e:
-                                print(f"⚠️  JSON解析错误 (行{line_num}): {e}")
+                                print(f"⚠️  JSON parsing error (line {line_num}): {e}")
                                 continue
                             except Exception as e:
-                                print(f"⚠️  解析错误 (行{line_num}): {e}")
+                                print(f"⚠️  Parsing error (line {line_num}): {e}")
                                 continue
                 return data
             except Exception as e:
-                print(f"⚠️  文件读取错误 (编码{encoding}): {e}")
+                print(f"⚠️  File reading error (encoding {encoding}): {e}")
                 continue
         return []
     
     def extract_data_from_record(self, record):
-        """从记录中提取数据"""
+        """Extract data from record"""
         # 基础数据
         self.generations.append(record.get('generation', 0))
         self.best_fitness.append(record.get('best_fitness', 0))
@@ -147,14 +147,14 @@ class EnhancedTrainingMonitor:
         self.system_memory.append(record.get('system_memory_gb', 0.0))
     
     def start_monitoring(self):
-        """开始监控"""
-        # 加载初始数据
-        print("📚 加载历史数据...")
+        """Start monitoring"""
+        # Load initial data
+        print("📚 Loading historical data...")
         initial_data = self.load_data()
         for record in initial_data:
             self.extract_data_from_record(record)
         
-        print(f"✅ 已加载 {len(initial_data)} 条历史记录")
+        print(f"✅ Loaded {len(initial_data)} historical records")
         
         if self.log_file.exists():
             self.last_file_size = self.log_file.stat().st_size
@@ -168,7 +168,7 @@ class EnhancedTrainingMonitor:
             self.text_mode()
     
     def monitor_file(self):
-        """监控文件变化"""
+        """Monitor file changes"""
         while self.monitoring:
             try:
                 if self.log_file.exists():
@@ -184,95 +184,95 @@ class EnhancedTrainingMonitor:
                                     try:
                                         self.data_queue.put(json.loads(line))
                                     except json.JSONDecodeError as e:
-                                        print(f"⚠️  JSON解析错误: {e}")
+                                        print(f"⚠️  JSON parsing error: {e}")
                                         continue
                                     except Exception as e:
-                                        print(f"⚠️  数据处理错误: {e}")
+                                        print(f"⚠️  Data processing error: {e}")
                                         continue
                         self.last_file_size = current_size
                 time.sleep(1)
             except Exception as e:
-                print(f"❌ 监控错误: {e}")
+                print(f"❌ Monitoring error: {e}")
                 time.sleep(5)
     
     def setup_plots(self):
-        """设置图表"""
+        """Setup plots"""
         self.fig, self.axes = plt.subplots(3, 3, figsize=(18, 12))
-        self.fig.suptitle('🚀 增强版CUDA遗传算法训练监控', fontsize=16)
+        self.fig.suptitle('🚀 Enhanced CUDA Genetic Algorithm Training Monitor', fontsize=16)
         
-        # 1. 适应度进化 (0,0)
+        # 1. Fitness Evolution (0,0)
         self.ax_fitness = self.axes[0, 0]
-        self.line_best, = self.ax_fitness.plot([], [], 'b-', linewidth=2, label='最佳适应度')
-        self.line_avg, = self.ax_fitness.plot([], [], 'r--', linewidth=1, label='平均适应度')
-        self.ax_fitness.set_title('🎯 适应度进化')
-        self.ax_fitness.set_xlabel('代数')
-        self.ax_fitness.set_ylabel('适应度')
+        self.line_best, = self.ax_fitness.plot([], [], 'b-', linewidth=2, label='Best Fitness')
+        self.line_avg, = self.ax_fitness.plot([], [], 'r--', linewidth=1, label='Average Fitness')
+        self.ax_fitness.set_title('🎯 Fitness Evolution')
+        self.ax_fitness.set_xlabel('Generation')
+        self.ax_fitness.set_ylabel('Fitness')
         self.ax_fitness.legend()
         self.ax_fitness.grid(True, alpha=0.3)
         
-        # 2. 多目标优化 (0,1)
+        # 2. Multi-Objective Optimization (0,1)
         self.ax_pareto = self.axes[0, 1]
-        self.line_pareto, = self.ax_pareto.plot([], [], 'g-', linewidth=2, label='帕累托前沿大小')
-        self.ax_pareto.set_title('🎯 多目标优化')
-        self.ax_pareto.set_xlabel('代数')
-        self.ax_pareto.set_ylabel('帕累托前沿大小')
+        self.line_pareto, = self.ax_pareto.plot([], [], 'g-', linewidth=2, label='Pareto Front Size')
+        self.ax_pareto.set_title('🎯 Multi-Objective Optimization')
+        self.ax_pareto.set_xlabel('Generation')
+        self.ax_pareto.set_ylabel('Pareto Front Size')
         self.ax_pareto.legend()
         self.ax_pareto.grid(True, alpha=0.3)
         
-        # 3. 数据退火 (0,2)
+        # 3. Data Annealing (0,2)
         self.ax_annealing = self.axes[0, 2]
-        self.line_data_ratio, = self.ax_annealing.plot([], [], 'orange', linewidth=2, label='数据使用比例')
-        self.line_complexity, = self.ax_annealing.plot([], [], 'purple', linewidth=2, label='复杂度得分')
-        self.ax_annealing.set_title('🔥 数据退火进度')
-        self.ax_annealing.set_xlabel('代数')
-        self.ax_annealing.set_ylabel('比例/得分')
+        self.line_data_ratio, = self.ax_annealing.plot([], [], 'orange', linewidth=2, label='Data Usage Ratio')
+        self.line_complexity, = self.ax_annealing.plot([], [], 'purple', linewidth=2, label='Complexity Score')
+        self.ax_annealing.set_title('🔥 Data Annealing Progress')
+        self.ax_annealing.set_xlabel('Generation')
+        self.ax_annealing.set_ylabel('Ratio/Score')
         self.ax_annealing.legend()
         self.ax_annealing.grid(True, alpha=0.3)
         
-        # 4. 交易性能 (1,0)
+        # 4. Trading Performance (1,0)
         self.ax_trading = self.axes[1, 0]
-        self.line_sharpe, = self.ax_trading.plot([], [], 'blue', linewidth=2, label='夏普比率')
-        self.line_return, = self.ax_trading.plot([], [], 'green', linewidth=2, label='总收益率')
-        self.ax_trading.set_title('💰 交易性能')
-        self.ax_trading.set_xlabel('代数')
-        self.ax_trading.set_ylabel('指标值')
+        self.line_sharpe, = self.ax_trading.plot([], [], 'blue', linewidth=2, label='Sharpe Ratio')
+        self.line_return, = self.ax_trading.plot([], [], 'green', linewidth=2, label='Total Return')
+        self.ax_trading.set_title('💰 Trading Performance')
+        self.ax_trading.set_xlabel('Generation')
+        self.ax_trading.set_ylabel('Metric Value')
         self.ax_trading.legend()
         self.ax_trading.grid(True, alpha=0.3)
         
-        # 5. 风险指标 (1,1)
+        # 5. Risk Metrics (1,1)
         self.ax_risk = self.axes[1, 1]
-        self.line_drawdown, = self.ax_risk.plot([], [], 'red', linewidth=2, label='最大回撤')
-        self.line_winrate, = self.ax_risk.plot([], [], 'cyan', linewidth=2, label='胜率')
-        self.ax_risk.set_title('⚠️ 风险指标')
-        self.ax_risk.set_xlabel('代数')
-        self.ax_risk.set_ylabel('指标值')
+        self.line_drawdown, = self.ax_risk.plot([], [], 'red', linewidth=2, label='Max Drawdown')
+        self.line_winrate, = self.ax_risk.plot([], [], 'cyan', linewidth=2, label='Win Rate')
+        self.ax_risk.set_title('⚠️ Risk Metrics')
+        self.ax_risk.set_xlabel('Generation')
+        self.ax_risk.set_ylabel('Metric Value')
         self.ax_risk.legend()
         self.ax_risk.grid(True, alpha=0.3)
         
-        # 6. 系统性能 (1,2)
+        # 6. System Performance (1,2)
         self.ax_system = self.axes[1, 2]
-        self.line_gpu, = self.ax_system.plot([], [], 'red', linewidth=2, label='GPU内存(GB)')
-        self.line_time, = self.ax_system.plot([], [], 'blue', linewidth=2, label='代数时间(s)')
-        self.ax_system.set_title('💻 系统性能')
-        self.ax_system.set_xlabel('代数')
-        self.ax_system.set_ylabel('资源使用')
+        self.line_gpu, = self.ax_system.plot([], [], 'red', linewidth=2, label='GPU Memory(GB)')
+        self.line_time, = self.ax_system.plot([], [], 'blue', linewidth=2, label='Generation Time(s)')
+        self.ax_system.set_title('💻 System Performance')
+        self.ax_system.set_xlabel('Generation')
+        self.ax_system.set_ylabel('Resource Usage')
         self.ax_system.legend()
         self.ax_system.grid(True, alpha=0.3)
         
-        # 7. 种群多样性 (2,0)
+        # 7. Population Diversity (2,0)
         self.ax_diversity = self.axes[2, 0]
-        self.line_diversity, = self.ax_diversity.plot([], [], 'magenta', linewidth=2, label='种群多样性')
-        self.ax_diversity.set_title('🌈 种群多样性')
-        self.ax_diversity.set_xlabel('代数')
-        self.ax_diversity.set_ylabel('多样性指标')
+        self.line_diversity, = self.ax_diversity.plot([], [], 'magenta', linewidth=2, label='Population Diversity')
+        self.ax_diversity.set_title('🌈 Population Diversity')
+        self.ax_diversity.set_xlabel('Generation')
+        self.ax_diversity.set_ylabel('Diversity Metric')
         self.ax_diversity.legend()
         self.ax_diversity.grid(True, alpha=0.3)
         
-        # 8. 适应度分布 (2,1)
+        # 8. Fitness Distribution (2,1)
         self.ax_dist = self.axes[2, 1]
-        self.ax_dist.set_title('📊 最近适应度分布')
+        self.ax_dist.set_title('📊 Recent Fitness Distribution')
         
-        # 9. 统计信息 (2,2)
+        # 9. Statistics (2,2)
         self.ax_stats = self.axes[2, 2]
         self.ax_stats.axis('off')
         self.stats_text = self.ax_stats.text(0.05, 0.95, '', transform=self.ax_stats.transAxes,
@@ -285,7 +285,7 @@ class EnhancedTrainingMonitor:
                                          cache_frame_data=False)
     
     def update_plots(self, frame):
-        """更新图表"""
+        """Update plots"""
         # 处理新数据
         while not self.data_queue.empty():
             try:
@@ -340,20 +340,20 @@ class EnhancedTrainingMonitor:
             self.ax_diversity.relim()
             self.ax_diversity.autoscale_view()
         
-        # 更新适应度分布
+        # Update fitness distribution
         if len(self.best_fitness) >= 20:
             self.ax_dist.clear()
             recent_fitness = list(self.best_fitness)[-30:]
             self.ax_dist.hist(recent_fitness, bins=15, alpha=0.7, color='lightblue', edgecolor='black')
-            self.ax_dist.set_title('📊 最近适应度分布')
+            self.ax_dist.set_title('📊 Recent Fitness Distribution')
             self.ax_dist.grid(True, alpha=0.3)
         
-        # 更新统计信息
+        # Update statistics
         if len(self.generations) > 0:
             self.update_stats_text()
     
     def update_stats_text(self):
-        """更新统计文本"""
+        """Update statistics text"""
         current_gen = self.generations[-1]
         current_best = self.best_fitness[-1]
         current_avg = self.avg_fitness[-1]
@@ -380,60 +380,60 @@ class EnhancedTrainingMonitor:
         current_gpu = self.gpu_memory[-1] if self.gpu_memory else 0.0
         current_sys_mem = self.system_memory[-1] if self.system_memory else 0.0
         
-        stats_info = f"""🚀 增强版训练统计
+        stats_info = f"""🚀 Enhanced Training Statistics
 
-📈 基础指标:
-  代数: {current_gen}
-  最佳适应度: {current_best:.6f}
-  平均适应度: {current_avg:.6f}
-  历史最佳: {best_ever:.6f}
+📈 Basic Metrics:
+  Generation: {current_gen}
+  Best Fitness: {current_best:.6f}
+  Avg Fitness: {current_avg:.6f}
+  Best Ever: {best_ever:.6f}
 
-⏱️ 时间统计:
-  当前代时间: {current_time:.2f}s
-  平均代时间: {avg_time:.2f}s
-  总训练时间: {total_time/3600:.2f}h
+⏱️ Time Statistics:
+  Current Gen Time: {current_time:.2f}s
+  Avg Gen Time: {avg_time:.2f}s
+  Total Time: {total_time/3600:.2f}h
 
-🎯 多目标优化:
-  帕累托前沿: {current_pareto}
+🎯 Multi-Objective:
+  Pareto Front: {current_pareto}
   
-🔥 数据退火:
-  数据使用比例: {current_data_ratio:.3f}
-  复杂度得分: {current_complexity:.3f}
+🔥 Data Annealing:
+  Data Usage Ratio: {current_data_ratio:.3f}
+  Complexity Score: {current_complexity:.3f}
 
-💰 交易性能:
-  夏普比率: {current_sharpe:.3f}
-  最大回撤: {current_drawdown:.3f}
-  总收益率: {current_return:.3f}
-  胜率: {current_winrate:.3f}
+💰 Trading Performance:
+  Sharpe Ratio: {current_sharpe:.3f}
+  Max Drawdown: {current_drawdown:.3f}
+  Total Return: {current_return:.3f}
+  Win Rate: {current_winrate:.3f}
 
-🌈 算法状态:
-  种群多样性: {current_diversity:.3f}
+🌈 Algorithm Status:
+  Population Diversity: {current_diversity:.3f}
 
-💻 系统资源:
-  GPU内存: {current_gpu:.2f}GB
-  系统内存: {current_sys_mem:.2f}GB
+💻 System Resources:
+  GPU Memory: {current_gpu:.2f}GB
+  System Memory: {current_sys_mem:.2f}GB
 
-📊 数据点数: {len(self.generations)}
-🕒 更新时间: {time.strftime('%H:%M:%S')}
+📊 Data Points: {len(self.generations)}
+🕒 Update Time: {time.strftime('%H:%M:%S')}
 """
         self.stats_text.set_text(stats_info)
     
     def show_plots(self):
-        """显示图表"""
-        print("🚀 启动增强版图表监控")
-        print("关闭窗口停止监控")
+        """Show plots"""
+        print("🚀 Starting enhanced chart monitoring")
+        print("Close window to stop monitoring")
         
         try:
             plt.show()
         except KeyboardInterrupt:
-            print("\n⏹️  监控已停止")
+            print("\n⏹️  Monitoring stopped")
         finally:
             self.monitoring = False
     
     def text_mode(self):
-        """文本模式监控"""
-        print("📝 文本模式监控")
-        print("按 Ctrl+C 停止\n")
+        """Text mode monitoring"""
+        print("📝 Text mode monitoring")
+        print("Press Ctrl+C to stop\n")
         
         last_size = 0
         
@@ -447,70 +447,70 @@ class EnhancedTrainingMonitor:
                             self.display_text(data[-1], len(data))
                         last_size = current_size
                     else:
-                        print(f"\r⏳ 等待更新... {time.strftime('%H:%M:%S')}", end="", flush=True)
+                        print(f"\r⏳ Waiting for updates... {time.strftime('%H:%M:%S')}", end="", flush=True)
                 else:
-                    print(f"\r⏳ 等待日志文件... {time.strftime('%H:%M:%S')}", end="", flush=True)
+                    print(f"\r⏳ Waiting for log file... {time.strftime('%H:%M:%S')}", end="", flush=True)
                 
                 time.sleep(3)
                 
         except KeyboardInterrupt:
-            print("\n⏹️  监控已停止")
+            print("\n⏹️  Monitoring stopped")
     
     def display_text(self, data, total_count):
-        """显示文本信息"""
+        """Display text information"""
         os.system('cls' if os.name == 'nt' else 'clear')
         
         print("=" * 80)
-        print("           🚀 增强版CUDA遗传算法训练监控")
+        print("           🚀 Enhanced CUDA Genetic Algorithm Training Monitor")
         print("=" * 80)
         
-        # 基础信息
-        print(f"📈 代数: {data.get('generation', 0)}")
-        print(f"🎯 最佳适应度: {data.get('best_fitness', 0):.6f}")
-        print(f"📊 平均适应度: {data.get('avg_fitness', 0):.6f}")
-        print(f"⏱️  代数时间: {data.get('generation_time', 0):.2f}s")
+        # Basic information
+        print(f"📈 Generation: {data.get('generation', 0)}")
+        print(f"🎯 Best Fitness: {data.get('best_fitness', 0):.6f}")
+        print(f"📊 Average Fitness: {data.get('avg_fitness', 0):.6f}")
+        print(f"⏱️  Generation Time: {data.get('generation_time', 0):.2f}s")
         
-        # 增强版特有信息
-        print(f"\n🔥 数据退火:")
-        print(f"   数据使用比例: {data.get('data_ratio', 1.0):.3f}")
-        print(f"   复杂度得分: {data.get('complexity_score', 1.0):.3f}")
+        # Enhanced version specific information
+        print(f"\n🔥 Data Annealing:")
+        print(f"   Data Usage Ratio: {data.get('data_ratio', 1.0):.3f}")
+        print(f"   Complexity Score: {data.get('complexity_score', 1.0):.3f}")
         
-        print(f"\n🎯 多目标优化:")
-        print(f"   帕累托前沿大小: {data.get('pareto_front_size', 0)}")
+        print(f"\n🎯 Multi-Objective Optimization:")
+        print(f"   Pareto Front Size: {data.get('pareto_front_size', 0)}")
         
-        print(f"\n💰 交易性能:")
-        print(f"   夏普比率: {data.get('avg_sharpe_ratio', 0.0):.3f}")
-        print(f"   最大回撤: {data.get('avg_max_drawdown', 0.0):.3f}")
-        print(f"   总收益率: {data.get('avg_total_return', 0.0):.3f}")
-        print(f"   胜率: {data.get('avg_win_rate', 0.0):.3f}")
+        print(f"\n💰 Trading Performance:")
+        print(f"   Sharpe Ratio: {data.get('avg_sharpe_ratio', 0.0):.3f}")
+        print(f"   Max Drawdown: {data.get('avg_max_drawdown', 0.0):.3f}")
+        print(f"   Total Return: {data.get('avg_total_return', 0.0):.3f}")
+        print(f"   Win Rate: {data.get('avg_win_rate', 0.0):.3f}")
         
-        print(f"\n🌈 算法状态:")
-        print(f"   种群多样性: {data.get('population_diversity', 0.0):.3f}")
+        print(f"\n🌈 Algorithm Status:")
+        print(f"   Population Diversity: {data.get('population_diversity', 0.0):.3f}")
         
-        # 系统性能
-        print(f"\n💻 系统性能:")
+        # System performance
+        print(f"\n💻 System Performance:")
         if 'gpu_memory_allocated' in data:
-            print(f"   GPU内存: {data['gpu_memory_allocated']:.2f}GB")
+            print(f"   GPU Memory: {data['gpu_memory_allocated']:.2f}GB")
         if 'system_memory_gb' in data:
-            print(f"   系统内存: {data['system_memory_gb']:.2f}GB")
+            print(f"   System Memory: {data['system_memory_gb']:.2f}GB")
         
-        print(f"\n📊 总记录数: {total_count}")
+        print(f"\n📊 Total Records: {total_count}")
         print("=" * 80)
-        print(f"🕒 更新时间: {time.strftime('%H:%M:%S')}")
-        print("按 Ctrl+C 停止监控")
+        print(f"🕒 Update Time: {time.strftime('%H:%M:%S')}")
+        print("Press Ctrl+C to stop monitoring")
         print("=" * 80)
 
 def main():
-    print("🚀 增强版CUDA遗传算法训练监控器")
+    print("🚀 Enhanced CUDA Genetic Algorithm Training Monitor")
     print("=" * 50)
     
     try:
         monitor = EnhancedTrainingMonitor()
         monitor.start_monitoring()
     except KeyboardInterrupt:
-        print("\n⏹️  监控被中断")
+        print("\n⏹️  Monitoring interrupted")
     except Exception as e:
-        print(f"\n❌ 错误: {e}")
+        print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
 

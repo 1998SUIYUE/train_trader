@@ -14,13 +14,13 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 def create_test_log():
-    """创建测试日志文件"""
+    """Create test log file"""
     results_dir = Path('results')
     results_dir.mkdir(exist_ok=True)
     
     log_file = results_dir / "enhanced_training_history.jsonl"
     
-    print(f"🧪 创建测试日志文件: {log_file}")
+    print(f"🧪 Creating test log file: {log_file}")
     
     # 模拟训练数据
     for generation in range(1, 21):
