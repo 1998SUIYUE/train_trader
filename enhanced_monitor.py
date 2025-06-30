@@ -27,10 +27,10 @@ try:
     plt.rcParams['axes.unicode_minus'] = False
     
     PLOTTING_AVAILABLE = True
-    print("📊 Graphics available - showing charts")
+    print("Graphics available - showing charts")
 except ImportError:
     PLOTTING_AVAILABLE = False
-    print("📝 matplotlib not available - text mode")
+    print("matplotlib not available - text mode")
 
 class EnhancedTrainingMonitor:
     def __init__(self):
