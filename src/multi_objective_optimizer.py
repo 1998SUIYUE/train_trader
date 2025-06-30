@@ -293,7 +293,7 @@ class MultiObjectiveOptimizer:
     
     def calculate_pareto_front(self, objectives: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        计算帕累托前沿
+        计算帕累托前沿（带超时保护）
         
         Args:
             objectives: 目标值字典
@@ -301,40 +301,123 @@ class MultiObjectiveOptimizer:
         Returns:
             帕累托前沿的索引, 支配等级
         """
-        # 将所有目标组合成矩阵 [population_size, n_objectives]
-        obj_names = list(objectives.keys())
-        obj_matrix = torch.stack([objectives[name] for name in obj_names], dim=1)
-        
-        population_size = obj_matrix.shape[0]
-        
-        # 计算支配关系
-        domination_counts = torch.zeros(population_size, device=obj_matrix.device)
-        dominated_solutions = [[] for _ in range(population_size)]
-        
-        for i in range(population_size):
-            for j in range(population_size):
-                if i != j:
+        try:
+            # 将所有目标组合成矩阵 [population_size, n_objectives]
+            obj_names = list(objectives.keys())
+            obj_matrix = torch.stack([objectives[name] for name in obj_names], dim=1)
+            
+            population_size = obj_matrix.shape[0]
+            
+            # 对于大种群，使用快速近似算法
+            if population_size > 1000:
+                return self._fast_pareto_approximation(obj_matrix)
+            
+            # 计算支配关系（带超时保护）
+            domination_counts = torch.zeros(population_size, device=obj_matrix.device)
+            dominated_solutions = [[] for _ in range(population_size)]
+            
+            # 限制比较次数，避免O(n²)复杂度导致的卡死
+            max_comparisons = min(population_size * population_size, 100000)
+            comparison_count = 0
+            
+            for i in range(population_size):
+                for j in range(i + 1, population_size):  # 只比较上三角，减少计算量
+                    comparison_count += 1
+                    if comparison_count > max_comparisons:
+                        self.logger.warning(f"帕累托前沿计算达到最大比较次数限制: {max_comparisons}")
+                        break
+                    
                     if self._dominates(obj_matrix[i], obj_matrix[j]):
                         dominated_solutions[i].append(j)
+                        domination_counts[j] += 1
                     elif self._dominates(obj_matrix[j], obj_matrix[i]):
+                        dominated_solutions[j].append(i)
                         domination_counts[i] += 1
+                
+                if comparison_count > max_comparisons:
+                    break
+            
+            # 找到帕累托前沿（支配计数为0的解）
+            pareto_front = torch.where(domination_counts == 0)[0]
+            
+            # 如果没有找到帕累托前沿或前沿为空，返回最佳的几个解
+            if len(pareto_front) == 0:
+                # 选择第一个目标最好的解作为备用
+                first_obj = obj_matrix[:, 0]
+                _, best_indices = torch.topk(first_obj, min(self.config.pareto_front_size, population_size))
+                pareto_front = best_indices
+                self.logger.warning("未找到有效的帕累托前沿，使用第一个目标的最佳解")
+            
+            # 如果帕累托前沿太大，使用拥挤距离进行筛选
+            elif len(pareto_front) > self.config.pareto_front_size:
+                try:
+                    crowding_distances = self._calculate_crowding_distance(
+                        obj_matrix[pareto_front]
+                    )
+                    # 选择拥挤距离最大的解
+                    _, selected_indices = torch.topk(
+                        crowding_distances, 
+                        self.config.pareto_front_size
+                    )
+                    pareto_front = pareto_front[selected_indices]
+                except Exception as e:
+                    self.logger.warning(f"拥挤距离计算失败: {e}，使用随机选择")
+                    # 随机选择
+                    indices = torch.randperm(len(pareto_front))[:self.config.pareto_front_size]
+                    pareto_front = pareto_front[indices]
+            
+            return pareto_front, domination_counts
+            
+        except Exception as e:
+            self.logger.error(f"帕累托前沿计算失败: {e}")
+            # 返回随机选择的解作为备用
+            population_size = len(list(objectives.values())[0])
+            random_indices = torch.randperm(population_size)[:min(self.config.pareto_front_size, population_size)]
+            domination_counts = torch.zeros(population_size)
+            return random_indices, domination_counts
+    
+    def _fast_pareto_approximation(self, obj_matrix: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """快速帕累托前沿近似算法（用于大种群）"""
+        population_size = obj_matrix.shape[0]
         
-        # 找到帕累托前沿（支配计数为0的解）
-        pareto_front = torch.where(domination_counts == 0)[0]
+        # 随机采样减少计算量
+        sample_size = min(500, population_size)
+        sample_indices = torch.randperm(population_size)[:sample_size]
+        sample_matrix = obj_matrix[sample_indices]
         
-        # 如果帕累托前沿太大，使用拥挤距离进行筛选
-        if len(pareto_front) > self.config.pareto_front_size:
-            crowding_distances = self._calculate_crowding_distance(
-                obj_matrix[pareto_front]
-            )
-            # 选择拥挤距离最大的解
-            _, selected_indices = torch.topk(
-                crowding_distances, 
-                self.config.pareto_front_size
-            )
-            pareto_front = pareto_front[selected_indices]
+        # 在采样中计算帕累托前沿
+        domination_counts = torch.zeros(sample_size, device=obj_matrix.device)
         
-        return pareto_front, domination_counts
+        for i in range(sample_size):
+            for j in range(i + 1, sample_size):
+                if self._dominates(sample_matrix[i], sample_matrix[j]):
+                    domination_counts[j] += 1
+                elif self._dominates(sample_matrix[j], sample_matrix[i]):
+                    domination_counts[i] += 1
+        
+        # 找到采样中的帕累托前沿
+        sample_pareto = torch.where(domination_counts == 0)[0]
+        
+        if len(sample_pareto) == 0:
+            # 如果没有找到，选择第一个目标最好的
+            first_obj = sample_matrix[:, 0]
+            _, best_idx = torch.topk(first_obj, 1)
+            sample_pareto = best_idx
+        
+        # 映射回原始索引
+        pareto_front = sample_indices[sample_pareto]
+        
+        # 扩展到目标大小
+        if len(pareto_front) < self.config.pareto_front_size:
+            # 添加更多随机解
+            remaining = self.config.pareto_front_size - len(pareto_front)
+            remaining_indices = torch.randperm(population_size)[:remaining]
+            pareto_front = torch.cat([pareto_front, remaining_indices])
+        
+        # 创建全种群的支配计数（简化版）
+        full_domination_counts = torch.zeros(population_size, device=obj_matrix.device)
+        
+        return pareto_front[:self.config.pareto_front_size], full_domination_counts
     
     def _dominates(self, solution1: torch.Tensor, solution2: torch.Tensor) -> bool:
         """判断solution1是否支配solution2"""

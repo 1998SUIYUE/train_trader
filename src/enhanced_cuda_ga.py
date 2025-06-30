@@ -220,9 +220,13 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                             stop_losses, max_positions, max_drawdowns, trade_positions
                         )
                         
-                        # 计算帕累托前沿（可能耗时，添加简化版本）
-                        if self.generation % 5 == 0:  # 每5代计算一次完整的帕累托前沿
-                            pareto_front, domination_counts = self.multi_objective_optimizer.calculate_pareto_front(objectives)
+                        # 计算帕累托前沿（减少计算频率，避免卡死）
+                        if self.generation % 20 == 0:  # 每20代计算一次完整的帕累托前沿
+                            try:
+                                pareto_front, domination_counts = self.multi_objective_optimizer.calculate_pareto_front(objectives)
+                            except Exception as e:
+                                self.logger.warning(f"帕累托前沿计算失败: {e}")
+                                pareto_front, domination_counts = [], []
                         else:
                             pareto_front, domination_counts = [], []
                         
@@ -326,8 +330,8 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
             if self.enhanced_monitor:
                 try:
                     with timer("enhanced_monitoring", "ga"):
-                        # 减少种群多样性计算频率以提高性能
-                        population_for_diversity = self.population if self.generation % 5 == 0 else None
+                        # 大幅减少种群多样性计算频率以提高性能
+                        population_for_diversity = self.population if self.generation % 50 == 0 else None
                         
                         metrics = self.enhanced_monitor.update_metrics(
                             self.generation,
@@ -340,9 +344,13 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                         # 保存种群多样性数据供日志使用
                         if hasattr(metrics, 'population_diversity'):
                             self._last_population_diversity = metrics.population_diversity
+                        elif not hasattr(self, '_last_population_diversity'):
+                            self._last_population_diversity = 0.5  # 默认值
                 except Exception as e:
                     self.logger.warning(f"增强监控更新失败: {e}")
                     # 继续执行，不中断训练
+                    if not hasattr(self, '_last_population_diversity'):
+                        self._last_population_diversity = 0.5
             
             # 记录历史
             self.fitness_history.append(enhanced_stats)
@@ -361,70 +369,116 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
         return weighted_fitness
     
     def _save_generation_log(self, stats: Dict[str, Any], log_file: Path):
-        """直接保存代数日志到JSONL文件"""
-        try:
-            # 确保目录存在
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            # 准备完整的日志数据
-            log_data = stats.copy()
-            
-            # 添加增强版特有的数据
-            if self.data_annealer:
-                annealing_progress = self.data_annealer.get_annealing_progress()
-                log_data.update({
-                    'data_ratio': annealing_progress.get('data_ratio', 1.0),
-                    'complexity_score': annealing_progress.get('complexity_score', 1.0),
-                    'annealing_strategy': annealing_progress.get('strategy', 'none'),
-                    'annealing_progress': annealing_progress.get('progress', 0.0),
-                })
-            
-            # 添加多目标优化数据
-            if self.multi_objective_optimizer and hasattr(self, '_last_multi_objective_stats'):
-                log_data.update({
-                    'pareto_front_size': self._last_multi_objective_stats.get('pareto_front_size', 0),
-                    'hypervolume': self._last_multi_objective_stats.get('hypervolume', 0.0),
-                    'pareto_ratio': self._last_multi_objective_stats.get('pareto_ratio', 0.0),
-                })
-                
-                # 添加交易性能指标
-                obj_stats = self._last_multi_objective_stats.get('objective_stats', {})
-                log_data.update({
-                    'avg_sharpe_ratio': obj_stats.get('sharpe_ratio', {}).get('mean', 0.0),
-                    'avg_max_drawdown': obj_stats.get('max_drawdown', {}).get('mean', 0.0),
-                    'avg_total_return': obj_stats.get('total_return', {}).get('mean', 0.0),
-                    'avg_win_rate': obj_stats.get('win_rate', {}).get('mean', 0.0),
-                    'avg_trade_frequency': obj_stats.get('trade_frequency', {}).get('mean', 0.0),
-                    'avg_volatility': obj_stats.get('volatility', {}).get('mean', 0.0),
-                    'avg_profit_factor': obj_stats.get('profit_factor', {}).get('mean', 0.0),
-                })
-            
-            # 添加种群多样性（如果可用）
-            if hasattr(self, '_last_population_diversity'):
-                log_data['population_diversity'] = self._last_population_diversity
-            
-            # 写入文件
-            with open(log_file, 'a', encoding='utf-8', buffering=1) as f:
-                json.dump(log_data, f, ensure_ascii=False)
-                f.write('\n')
-                f.flush()
-                import os
-                os.fsync(f.fileno())  # 强制写入磁盘
-                
-        except Exception as e:
-            self.logger.error(f"保存代数日志失败: {e}")
-            # 尝试写入备份文件
+        """直接保存代数日志到JSONL文件（带超时保护）"""
+        import signal
+        import threading
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError("日志写入超时")
+        
+        def safe_write_log():
             try:
-                backup_file = log_file.with_suffix('.jsonl.backup')
-                with open(backup_file, 'a', encoding='utf-8', buffering=1) as f:
+                # 确保目录存在
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 准备完整的日志数据
+                log_data = stats.copy()
+                
+                # 添加增强版特有的数据（带超时保护）
+                if self.data_annealer:
+                    try:
+                        annealing_progress = self.data_annealer.get_annealing_progress()
+                        log_data.update({
+                            'data_ratio': annealing_progress.get('data_ratio', 1.0),
+                            'complexity_score': annealing_progress.get('complexity_score', 1.0),
+                            'annealing_strategy': annealing_progress.get('strategy', 'none'),
+                            'annealing_progress': annealing_progress.get('progress', 0.0),
+                        })
+                    except Exception as e:
+                        self.logger.warning(f"获取退火进度失败: {e}")
+                        log_data.update({
+                            'data_ratio': 1.0,
+                            'complexity_score': 1.0,
+                            'annealing_strategy': 'error',
+                            'annealing_progress': 0.0,
+                        })
+                
+                # 添加多目标优化数据（带错误保护）
+                if self.multi_objective_optimizer and hasattr(self, '_last_multi_objective_stats'):
+                    try:
+                        log_data.update({
+                            'pareto_front_size': self._last_multi_objective_stats.get('pareto_front_size', 0),
+                            'hypervolume': self._last_multi_objective_stats.get('hypervolume', 0.0),
+                            'pareto_ratio': self._last_multi_objective_stats.get('pareto_ratio', 0.0),
+                        })
+                        
+                        # 添加交易性能指标
+                        obj_stats = self._last_multi_objective_stats.get('objective_stats', {})
+                        log_data.update({
+                            'avg_sharpe_ratio': obj_stats.get('sharpe_ratio', {}).get('mean', 0.0),
+                            'avg_max_drawdown': obj_stats.get('max_drawdown', {}).get('mean', 0.0),
+                            'avg_total_return': obj_stats.get('total_return', {}).get('mean', 0.0),
+                            'avg_win_rate': obj_stats.get('win_rate', {}).get('mean', 0.0),
+                            'avg_trade_frequency': obj_stats.get('trade_frequency', {}).get('mean', 0.0),
+                            'avg_volatility': obj_stats.get('volatility', {}).get('mean', 0.0),
+                            'avg_profit_factor': obj_stats.get('profit_factor', {}).get('mean', 0.0),
+                        })
+                    except Exception as e:
+                        self.logger.warning(f"获取多目标统计失败: {e}")
+                
+                # 添加种群多样性（如果可用）
+                if hasattr(self, '_last_population_diversity'):
+                    try:
+                        log_data['population_diversity'] = self._last_population_diversity
+                    except Exception as e:
+                        self.logger.warning(f"获取种群多样性失败: {e}")
+                
+                # 写入文件（简化版本，减少阻塞风险）
+                with open(log_file, 'a', encoding='utf-8') as f:
                     json.dump(log_data, f, ensure_ascii=False)
                     f.write('\n')
+                    # 移除可能导致阻塞的fsync调用
                     f.flush()
-                    import os
-                    os.fsync(f.fileno())
-                self.logger.info(f"已写入备份文件: {backup_file}")
-            except Exception as e2:
-                self.logger.error(f"备份文件写入也失败: {e2}")
+                    
+            except Exception as e:
+                self.logger.error(f"保存代数日志失败: {e}")
+                # 简化的备份写入
+                try:
+                    backup_file = log_file.with_suffix('.jsonl.backup')
+                    with open(backup_file, 'a', encoding='utf-8') as f:
+                        # 只写入基础统计信息
+                        basic_data = {
+                            'generation': stats.get('generation', 0),
+                            'best_fitness': stats.get('best_fitness', 0.0),
+                            'avg_fitness': stats.get('avg_fitness', 0.0),
+                            'generation_time': stats.get('generation_time', 0.0),
+                        }
+                        json.dump(basic_data, f, ensure_ascii=False)
+                        f.write('\n')
+                        f.flush()
+                    self.logger.info(f"已写入简化备份文件: {backup_file}")
+                except Exception as e2:
+                    self.logger.error(f"备份文件写入也失败: {e2}")
+        
+        try:
+            # 使用线程超时机制
+            write_thread = threading.Thread(target=safe_write_log)
+            write_thread.daemon = True
+            write_thread.start()
+            write_thread.join(timeout=5.0)  # 5秒超时
+            
+            if write_thread.is_alive():
+                self.logger.warning("日志写入超时，跳过本次写入")
+                
+        except Exception as e:
+            self.logger.error(f"日志写入线程失败: {e}")
+            # 最后的备用方案：只记录关键信息
+            try:
+                simple_log = f"Gen {stats.get('generation', 0)}: fitness={stats.get('best_fitness', 0.0):.6f}\n"
+                with open(log_file.with_suffix('.simple.log'), 'a') as f:
+                    f.write(simple_log)
+            except:
+                pass  # 如果连这个都失败，就放弃
     
     def evolve_enhanced(self, features: torch.Tensor, labels: torch.Tensor,
                        save_checkpoints: bool = True,

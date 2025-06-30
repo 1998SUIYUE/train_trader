@@ -311,20 +311,42 @@ class DataAnnealingScheduler:
         return volatilities
     
     def get_annealing_progress(self) -> Dict:
-        """获取退火进度信息"""
-        if not self.data_complexity_history:
-            return {}
-        
-        latest = self.data_complexity_history[-1]
-        return {
-            'current_generation': self.current_generation,
-            'strategy': self.config.strategy.value,
-            'progress': self._calculate_annealing_progress(self.current_generation),
-            'data_ratio': latest.get('data_ratio', 1.0),
-            'complexity_score': latest.get('complexity_score', 1.0),
-            'total_generations': self.config.total_generations,
-            'warmup_generations': self.config.warmup_generations
-        }
+        """获取退火进度信息（带错误保护）"""
+        try:
+            if not self.data_complexity_history:
+                return {
+                    'current_generation': self.current_generation,
+                    'strategy': self.config.strategy.value,
+                    'progress': 0.0,
+                    'data_ratio': 1.0,
+                    'complexity_score': 1.0,
+                    'total_generations': self.config.total_generations,
+                    'warmup_generations': self.config.warmup_generations
+                }
+            
+            latest = self.data_complexity_history[-1]
+            progress = self._calculate_annealing_progress(self.current_generation)
+            
+            return {
+                'current_generation': self.current_generation,
+                'strategy': self.config.strategy.value,
+                'progress': progress,
+                'data_ratio': latest.get('data_ratio', 1.0),
+                'complexity_score': latest.get('complexity_score', 1.0),
+                'total_generations': self.config.total_generations,
+                'warmup_generations': self.config.warmup_generations
+            }
+        except Exception as e:
+            self.logger.warning(f"获取退火进度失败: {e}")
+            return {
+                'current_generation': self.current_generation,
+                'strategy': 'error',
+                'progress': 0.0,
+                'data_ratio': 1.0,
+                'complexity_score': 1.0,
+                'total_generations': self.config.total_generations,
+                'warmup_generations': self.config.warmup_generations
+            }
     
     def get_complexity_history(self) -> List[Dict]:
         """获取复杂度历史"""
