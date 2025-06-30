@@ -22,6 +22,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from cuda_gpu_utils import CudaGPUManager, get_cuda_gpu_manager, check_cuda_compatibility, optimize_cuda_settings
 from enhanced_cuda_ga import EnhancedCudaGA, EnhancedGAConfig
 from data_annealing_scheduler import AnnealingStrategy
+from parameter_annealing_scheduler import ParameterAnnealingStrategy, ParameterRange
 from data_processor import GPUDataProcessor
 
 # 性能分析
@@ -89,6 +90,16 @@ def main():
         "min_data_ratio": 0.3,                  # 最小数据使用比例 (0.2-0.5)
         "max_data_ratio": 1.0,                  # 最大数据使用比例 (通常为1.0)
         "warmup_generations": 50,               # 预热代数 (20-100)
+        
+        # --- 参数退火配置 ---
+        "enable_parameter_annealing": True,     # 启用参数退火
+        "parameter_annealing_strategy": "adaptive",  # 参数退火策略: 'linear', 'exponential', 'cosine', 'step', 'adaptive', 'cyclic'
+        "mutation_rate_initial": 0.02,          # 变异率初始值
+        "mutation_rate_final": 0.005,           # 变异率最终值
+        "crossover_rate_initial": 0.6,          # 交叉率初始值
+        "crossover_rate_final": 0.9,            # 交叉率最终值
+        "elite_ratio_initial": 0.02,            # 精英比例初始值
+        "elite_ratio_final": 0.1,               # 精英比例最终值
         
         # --- 多目标优化配置 ---
         "enable_multi_objective": True,         # 启用多目标优化
@@ -158,6 +169,21 @@ def main():
         "warmup_generations": 10,
         "pareto_front_size": 30,
         "monitoring_save_interval": 5,        # 更频繁保存
+        
+        # 提高多样性的遗传算法参数
+        "mutation_rate": 0.02,                # 提高变异率：0.01→0.02
+        "crossover_rate": 0.8,                # 保持交叉率
+        "elite_ratio": 0.05,                  # 降低精英比例：0.1→0.05
+        
+        # 参数退火配置（调试用）
+        "enable_parameter_annealing": True,
+        "parameter_annealing_strategy": "adaptive",
+        "mutation_rate_initial": 0.03,        # 调试时更高的初始变异率
+        "mutation_rate_final": 0.01,
+        "crossover_rate_initial": 0.7,
+        "crossover_rate_final": 0.85,
+        "elite_ratio_initial": 0.03,
+        "elite_ratio_final": 0.08,
         
         # 启用简化的监控功能
         "enable_enhanced_monitoring": True,   # 启用增强监控
@@ -433,6 +459,41 @@ def main():
                 "progressive": AnnealingStrategy.PROGRESSIVE,
             }
             
+            # 转换参数退火策略
+            parameter_annealing_strategy_map = {
+                "linear": ParameterAnnealingStrategy.LINEAR,
+                "exponential": ParameterAnnealingStrategy.EXPONENTIAL,
+                "cosine": ParameterAnnealingStrategy.COSINE,
+                "step": ParameterAnnealingStrategy.STEP,
+                "adaptive": ParameterAnnealingStrategy.ADAPTIVE,
+                "cyclic": ParameterAnnealingStrategy.CYCLIC,
+            }
+            
+            # 创建参数范围配置
+            mutation_rate_range = None
+            crossover_rate_range = None
+            elite_ratio_range = None
+            
+            if ACTIVE_CONFIG["enable_parameter_annealing"]:
+                mutation_rate_range = ParameterRange(
+                    initial_value=ACTIVE_CONFIG["mutation_rate_initial"],
+                    final_value=ACTIVE_CONFIG["mutation_rate_final"],
+                    min_value=0.001,
+                    max_value=0.1
+                )
+                crossover_rate_range = ParameterRange(
+                    initial_value=ACTIVE_CONFIG["crossover_rate_initial"],
+                    final_value=ACTIVE_CONFIG["crossover_rate_final"],
+                    min_value=0.3,
+                    max_value=0.95
+                )
+                elite_ratio_range = ParameterRange(
+                    initial_value=ACTIVE_CONFIG["elite_ratio_initial"],
+                    final_value=ACTIVE_CONFIG["elite_ratio_final"],
+                    min_value=0.01,
+                    max_value=0.2
+                )
+            
             enhanced_config = EnhancedGAConfig(
                 # 基础遗传算法参数
                 population_size=ACTIVE_CONFIG["population_size"],
@@ -464,6 +525,13 @@ def main():
                 track_diversity=ACTIVE_CONFIG["track_diversity"],
                 track_convergence=ACTIVE_CONFIG["track_convergence"],
                 export_format=ACTIVE_CONFIG["export_format"],
+                
+                # 参数退火配置
+                enable_parameter_annealing=ACTIVE_CONFIG["enable_parameter_annealing"],
+                parameter_annealing_strategy=parameter_annealing_strategy_map[ACTIVE_CONFIG["parameter_annealing_strategy"]],
+                mutation_rate_range=mutation_rate_range,
+                crossover_rate_range=crossover_rate_range,
+                elite_ratio_range=elite_ratio_range,
             )
             
             print(f"增强版CUDA遗传算法配置: {enhanced_config}")

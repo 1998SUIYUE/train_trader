@@ -24,6 +24,7 @@ from cuda_accelerated_ga import CudaGPUAcceleratedGA, CudaGAConfig
 from data_annealing_scheduler import DataAnnealingScheduler, AnnealingConfig, AnnealingStrategy
 from multi_objective_optimizer import MultiObjectiveOptimizer, MultiObjectiveConfig, ObjectiveConfig, ObjectiveType
 from enhanced_monitoring import EnhancedMonitor, MonitoringConfig, PerformanceMetrics
+from parameter_annealing_scheduler import ParameterAnnealingScheduler, ParameterAnnealingConfig, ParameterAnnealingStrategy, ParameterRange
 
 try:
     from performance_profiler import timer
@@ -66,6 +67,13 @@ class EnhancedGAConfig(CudaGAConfig):
     track_diversity: bool = True
     track_convergence: bool = True
     export_format: str = "json"
+    
+    # 参数退火配置
+    enable_parameter_annealing: bool = True
+    parameter_annealing_strategy: ParameterAnnealingStrategy = ParameterAnnealingStrategy.ADAPTIVE
+    mutation_rate_range: ParameterRange = None
+    crossover_rate_range: ParameterRange = None
+    elite_ratio_range: ParameterRange = None
     
     def __post_init__(self):
         """后初始化处理"""
@@ -148,6 +156,21 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
         else:
             self.enhanced_monitor = None
         
+        # 初始化参数退火调度器
+        if config.enable_parameter_annealing:
+            param_annealing_config = ParameterAnnealingConfig(
+                strategy=config.parameter_annealing_strategy,
+                total_generations=config.max_generations,
+                warmup_generations=config.warmup_generations,
+                mutation_rate_range=config.mutation_rate_range,
+                crossover_rate_range=config.crossover_rate_range,
+                elite_ratio_range=config.elite_ratio_range
+            )
+            self.parameter_annealer = ParameterAnnealingScheduler(param_annealing_config)
+            self.logger.info("参数退火调度器已启用")
+        else:
+            self.parameter_annealer = None
+        
         self.logger.info("增强版CUDA遗传算法初始化完成")
     
     def _create_objectives_config(self) -> list:
@@ -185,7 +208,35 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
         with timer("evolve_one_generation_enhanced", "ga"):
             start_time = time.time()
             
-            # 1. 数据退火处理
+            # 1. 参数退火处理
+            parameter_annealing_info = {}
+            if self.parameter_annealer:
+                with timer("parameter_annealing", "ga"):
+                    # 计算当前平均适应度作为性能指标
+                    current_avg_fitness = torch.mean(self.fitness_scores).item() if hasattr(self, 'fitness_scores') else None
+                    fitness_history = [h.get('avg_fitness', 0.0) for h in self.fitness_history[-20:]]  # 最近20代的历史
+                    
+                    annealed_params = self.parameter_annealer.get_annealed_parameters(
+                        self.generation, current_avg_fitness, fitness_history
+                    )
+                    
+                    # 更新遗传算法参数
+                    self.config.mutation_rate = annealed_params['mutation_rate']
+                    self.config.crossover_rate = annealed_params['crossover_rate'] 
+                    self.config.elite_ratio = annealed_params['elite_ratio']
+                    
+                    parameter_annealing_info = {
+                        'mutation_rate': annealed_params['mutation_rate'],
+                        'crossover_rate': annealed_params['crossover_rate'],
+                        'elite_ratio': annealed_params['elite_ratio'],
+                        'learning_rate': annealed_params.get('learning_rate', 0.001),
+                    }
+                    
+                    self.logger.debug(f"参数退火: 变异率={annealed_params['mutation_rate']:.4f}, "
+                                    f"交叉率={annealed_params['crossover_rate']:.4f}, "
+                                    f"精英比例={annealed_params['elite_ratio']:.4f}")
+            
+            # 2. 数据退火处理
             annealing_info = {}
             if self.data_annealer:
                 with timer("data_annealing", "ga"):
@@ -196,7 +247,7 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
             else:
                 annealed_features, annealed_labels = features, labels
             
-            # 2. 评估适应度（包括多目标）
+            # 3. 评估适应度（包括多目标）
             multi_objective_stats = {}
             if self.multi_objective_optimizer:
                 try:
@@ -273,7 +324,7 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                     }
                 }
             
-            # 3. 更新最佳个体
+            # 4. 更新最佳个体
             with timer("update_best_individual", "ga"):
                 current_avg_fitness = torch.mean(self.fitness_scores).item()
                 best_idx = torch.argmax(self.fitness_scores)
@@ -294,7 +345,7 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                     self.best_fitness = current_best_fitness
                     self.best_individual = self.gpu_manager.to_cpu(self.population[best_idx])
             
-            # 4. 遗传算法操作
+            # 5. 遗传算法操作
             with timer("genetic_operations", "ga"):
                 # 精英保留
                 elite_size = int(self.config.population_size * self.config.elite_ratio)
@@ -313,7 +364,7 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
             self.generation += 1
             generation_time = time.time() - start_time
             
-            # 5. 构建增强统计信息
+            # 6. 构建增强统计信息
             enhanced_stats = {
                 'generation': self.generation,
                 'best_fitness': current_best_fitness,
@@ -326,7 +377,7 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                 'elite_ratio': self.config.elite_ratio,
             }
             
-            # 6. 更新增强监控
+            # 7. 更新增强监控
             if self.enhanced_monitor:
                 try:
                     with timer("enhanced_monitoring", "ga"):
@@ -404,6 +455,27 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
                         'complexity_score': 1.0,
                         'annealing_strategy': 'error',
                         'annealing_progress': 0.0,
+                    })
+            
+            # 安全地添加参数退火信息
+            if self.parameter_annealer:
+                try:
+                    current_params = self.parameter_annealer.get_current_parameters()
+                    log_data.update({
+                        'current_mutation_rate': current_params.get('mutation_rate', self.config.mutation_rate),
+                        'current_crossover_rate': current_params.get('crossover_rate', self.config.crossover_rate),
+                        'current_elite_ratio': current_params.get('elite_ratio', self.config.elite_ratio),
+                        'current_learning_rate': current_params.get('learning_rate', 0.001),
+                        'parameter_annealing_strategy': self.parameter_annealer.config.strategy.value,
+                    })
+                except Exception as e:
+                    self.logger.debug(f"获取参数退火信息失败: {e}")
+                    log_data.update({
+                        'current_mutation_rate': self.config.mutation_rate,
+                        'current_crossover_rate': self.config.crossover_rate,
+                        'current_elite_ratio': self.config.elite_ratio,
+                        'current_learning_rate': 0.001,
+                        'parameter_annealing_strategy': 'error',
                     })
             
             # 安全地添加多目标优化数据
@@ -696,6 +768,7 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
             # 增强状态
             'data_annealer_state': self.data_annealer.get_complexity_history() if self.data_annealer else None,
             'enhanced_monitor_state': self.enhanced_monitor.metrics_history if self.enhanced_monitor else None,
+            'parameter_annealer_state': self.parameter_annealer.get_parameter_history() if self.parameter_annealer else None,
         }
         torch.save(checkpoint, filepath)
         self.logger.info(f"增强检查点已保存: {filepath}")
@@ -720,6 +793,9 @@ class EnhancedCudaGA(CudaGPUAcceleratedGA):
         
         if 'enhanced_monitor_state' in checkpoint and self.enhanced_monitor:
             self.enhanced_monitor.metrics_history = checkpoint['enhanced_monitor_state'] or []
+        
+        if 'parameter_annealer_state' in checkpoint and self.parameter_annealer:
+            self.parameter_annealer.parameter_history = checkpoint['parameter_annealer_state'] or []
         
         self.logger.info(f"增强检查点已加载: {filepath}")
         self.logger.info(f"恢复到第 {self.generation} 代，最佳适应度: {self.best_fitness:.4f}")
