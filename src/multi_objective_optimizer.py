@@ -362,8 +362,8 @@ class MultiObjectiveOptimizer:
                     pareto_front = pareto_front[selected_indices]
                 except Exception as e:
                     self.logger.warning(f"拥挤距离计算失败: {e}，使用随机选择")
-                    # 随机选择
-                    indices = torch.randperm(len(pareto_front))[:self.config.pareto_front_size]
+                    # 随机选择（确保设备一致性）
+                    indices = torch.randperm(len(pareto_front), device=obj_matrix.device)[:self.config.pareto_front_size]
                     pareto_front = pareto_front[indices]
             
             return pareto_front, domination_counts
@@ -372,21 +372,23 @@ class MultiObjectiveOptimizer:
             self.logger.error(f"帕累托前沿计算失败: {e}")
             # 返回随机选择的解作为备用
             population_size = len(list(objectives.values())[0])
-            random_indices = torch.randperm(population_size)[:min(self.config.pareto_front_size, population_size)]
-            domination_counts = torch.zeros(population_size)
+            device = list(objectives.values())[0].device
+            random_indices = torch.randperm(population_size, device=device)[:min(self.config.pareto_front_size, population_size)]
+            domination_counts = torch.zeros(population_size, device=device)
             return random_indices, domination_counts
     
     def _fast_pareto_approximation(self, obj_matrix: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """快速帕累托前沿近似算法（用于大种群）"""
         population_size = obj_matrix.shape[0]
+        device = obj_matrix.device
         
-        # 随机采样减少计算量
+        # 随机采样减少计算量（确保在同一设备上）
         sample_size = min(500, population_size)
-        sample_indices = torch.randperm(population_size)[:sample_size]
+        sample_indices = torch.randperm(population_size, device=device)[:sample_size]
         sample_matrix = obj_matrix[sample_indices]
         
         # 在采样中计算帕累托前沿
-        domination_counts = torch.zeros(sample_size, device=obj_matrix.device)
+        domination_counts = torch.zeros(sample_size, device=device)
         
         for i in range(sample_size):
             for j in range(i + 1, sample_size):
@@ -404,18 +406,18 @@ class MultiObjectiveOptimizer:
             _, best_idx = torch.topk(first_obj, 1)
             sample_pareto = best_idx
         
-        # 映射回原始索引
+        # 映射回原始索引（确保设备一致性）
         pareto_front = sample_indices[sample_pareto]
         
         # 扩展到目标大小
         if len(pareto_front) < self.config.pareto_front_size:
-            # 添加更多随机解
+            # 添加更多随机解（确保在同一设备上）
             remaining = self.config.pareto_front_size - len(pareto_front)
-            remaining_indices = torch.randperm(population_size)[:remaining]
+            remaining_indices = torch.randperm(population_size, device=device)[:remaining]
             pareto_front = torch.cat([pareto_front, remaining_indices])
         
         # 创建全种群的支配计数（简化版）
-        full_domination_counts = torch.zeros(population_size, device=obj_matrix.device)
+        full_domination_counts = torch.zeros(population_size, device=device)
         
         return pareto_front[:self.config.pareto_front_size], full_domination_counts
     
@@ -427,28 +429,42 @@ class MultiObjectiveOptimizer:
         return better_or_equal and strictly_better
     
     def _calculate_crowding_distance(self, front_objectives: torch.Tensor) -> torch.Tensor:
-        """计算拥挤距离"""
-        n_solutions, n_objectives = front_objectives.shape
-        crowding_distances = torch.zeros(n_solutions, device=front_objectives.device)
-        
-        for obj_idx in range(n_objectives):
-            # 按当前目标排序
-            obj_values = front_objectives[:, obj_idx]
-            sorted_indices = torch.argsort(obj_values)
+        """计算拥挤距离（带错误保护）"""
+        try:
+            n_solutions, n_objectives = front_objectives.shape
+            device = front_objectives.device
+            crowding_distances = torch.zeros(n_solutions, device=device)
             
-            # 边界解设置为无穷大
-            crowding_distances[sorted_indices[0]] = float('inf')
-            crowding_distances[sorted_indices[-1]] = float('inf')
+            # 如果只有一个解，返回最大距离
+            if n_solutions <= 1:
+                return torch.full((n_solutions,), float('inf'), device=device)
             
-            # 计算中间解的拥挤距离
-            obj_range = obj_values.max() - obj_values.min()
-            if obj_range > 1e-8:
-                for i in range(1, n_solutions - 1):
-                    distance = (obj_values[sorted_indices[i + 1]] - 
-                               obj_values[sorted_indices[i - 1]]) / obj_range
-                    crowding_distances[sorted_indices[i]] += distance
-        
-        return crowding_distances
+            for obj_idx in range(n_objectives):
+                # 按当前目标排序
+                obj_values = front_objectives[:, obj_idx]
+                sorted_indices = torch.argsort(obj_values)
+                
+                # 边界解设置为无穷大
+                if n_solutions >= 2:
+                    crowding_distances[sorted_indices[0]] = float('inf')
+                    crowding_distances[sorted_indices[-1]] = float('inf')
+                
+                # 计算中间解的拥挤距离
+                obj_range = obj_values.max() - obj_values.min()
+                if obj_range > 1e-8 and n_solutions > 2:
+                    for i in range(1, n_solutions - 1):
+                        distance = (obj_values[sorted_indices[i + 1]] - 
+                                   obj_values[sorted_indices[i - 1]]) / obj_range
+                        crowding_distances[sorted_indices[i]] += distance
+            
+            return crowding_distances
+            
+        except Exception as e:
+            self.logger.warning(f"拥挤距离计算失败: {e}")
+            # 返回随机距离
+            n_solutions = front_objectives.shape[0]
+            device = front_objectives.device
+            return torch.rand(n_solutions, device=device)
     
     def nsga2_selection(self, population: torch.Tensor, objectives: Dict[str, torch.Tensor],
                        selection_size: int) -> torch.Tensor:
